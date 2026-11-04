@@ -1,0 +1,38 @@
+{
+  "duz-ikon": {
+    "aciklama": "Düz, sade vektör ikon. Arka plan silmeye uygun.",
+    "onEk": "flat vector icon, minimalist, bold simple shapes, clean edges, centered, single object",
+    "sonEk": "plain white background, no text",
+    "negatif": "text, letters, watermark, signature, photo, realistic, noisy background, gradient background, drop shadow, frame, border, multiple objects, cropped"
+  },
+  "3b-ikon": {
+    "aciklama": "Parlak, 3B görünümlü uygulama ikonu.",
+    "onEk": "3d rendered app icon, glossy materials, soft studio lighting, centered, single object",
+    "sonEk": "plain white background, no text",
+    "negatif": "text, letters, watermark, signature, noisy background, frame, border, multiple objects, cropped, blurry"
+  },
+  "cizgi-ikon": {
+    "aciklama": "Tek kalınlıkta çizgi ikon.",
+    "onEk": "line icon, monoline, clean black outline strokes, minimalist, centered, single object",
+    "sonEk": "plain white background, no text",
+    "negatif": "text, letters, watermark, color fill, shading, photo, realistic, frame, border, multiple objects"
+  },
+  "uzay-ikon": {
+    "aciklama": "Parlayan bilimkurgu/uzay temalı ikon. Siyah zemin; arkaPlanSil: \"parlaklik\" ile kullan.",
+    "onEk": "sci-fi space themed icon, glowing neon details, cosmic colors, centered, single object",
+    "sonEk": "plain black background, no text",
+    "negatif": "text, letters, watermark, signature, stars in background, nebula background, frame, border, multiple objects, cropped"
+  },
+  "piksel": {
+    "aciklama": "16 bit piksel sanatı sprite.",
+    "onEk": "pixel art sprite, 16-bit, limited palette, crisp pixels, centered, single object",
+    "sonEk": "plain white background, no text",
+    "negatif": "text, letters, watermark, blurry, smooth gradients, photo, realistic, frame, border"
+  },
+  "fotograf": {
+    "aciklama": "Gerçekçi fotoğraf.",
+    "onEk": "professional photograph, natural lighting, high detail, sharp focus",
+    "sonEk": "",
+    "negatif": "cartoon, drawing, painting, illustration, text, watermark, deformed, blurry, low quality"
+  }
+}

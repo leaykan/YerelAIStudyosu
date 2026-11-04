@@ -1,0 +1,110 @@
+# ============================================================================
+# Yerel AI Stüdyosu — depoya girmeyecekler
+# Asıl koruma scripts/yayin/disa-aktar.cjs'tir (izin listesi + gizli/kişisel bilgi taraması);
+# bu dosya, çalışma kopyasında yanlışlıkla "git add ." yapılırsa diye ikinci bir emniyettir.
+# ============================================================================
+
+# --- Kişisel veriler ve ayarlar (ASLA yayımlanmaz) ---
+# ayarlar, şifreli bulut anahtarları (bulut-anahtarlari.json), ilk-kurulum.json
+app/config/
+# sohbet geçmişi
+app/chat-history/
+# üretilen görseller, iş kuyruğu çıktıları
+app/outputs/
+app/tts-outputs/
+app/transcriptions/
+# ses klonlama örnekleri ve onay kayıtları
+app/reference-voices/
+# kullanıcı hesapları, oturumlar ve kişisel hafıza (kullanıcı girişi eklenince)
+app/kullanicilar/
+app/users/
+*.onay.json
+app/etkin-modeller.json
+app/model-etiketleri.json
+# iş kuyruğu kayıtları ve motor günlüğü
+app/is-kuyrugu/*
+!app/is-kuyrugu/BENIOKU.md
+!app/is-kuyrugu/stiller.json
+.env
+.env.*
+**/bulut-anahtarlari.json*
+**/hf-token.txt
+**/uzak-erisim-anahtari.txt
+scripts/yayin/ozel-isimler.txt
+ozel-isimler*.txt
+.disa-aktarim
+
+# --- Geliştirici notları, yedekler, çöp ---
+# (araçların/asistanların kökte açtığı "… outputs" not klasörleri, test notları)
+/* outputs/
+test-notlari*.md
+YAYIN-DENETIMI.md
+BAGIMSIZLIK-DENETIMI.md
+_to_delete/
+yedek-*/
+*.yedek*
+*-yedek*
+*.bak
+*.orig
+# yama / entegrasyon çalışma klasörleri
+entegrasyon*/
+yamalar/
+*.patch
+*.rej
+app/frontend/.agents/
+scripts/ddyz_watchdog.sh
+
+# --- İndirilen modeller (kurulum / sihirbaz indirir) ---
+app/models/
+app/llm-models/
+app/speech-models/
+app/tts-models/
+app/music-models/
+app/video-models/
+app/openvino-models/
+app/loras/
+app/sd-araclar/
+app/piper/
+*.gguf
+*.safetensors
+*.ckpt
+*.pth
+*.onnx
+
+# --- Taşınabilir çalışma zamanları ve motorlar ---
+app/backend/
+app/llm-backend/
+app/speech-backend/
+app/tts-runtime/
+app/tools/
+
+# --- Üretilen dosyalar ---
+app/cache/
+app/dist/
+app/tts-cache/
+# Ses klonlama: kişisel ses kayıtları, metinleri, onay kayıtları ve sesli sohbet örnekleri (yalnızca bu bilgisayarda kalır)
+app/reference-voices/
+
+# --- Bağımlılıklar ve platforma özel kopyalar ---
+**/node_modules/
+**/node_modules_*/
+**/.active_modules_os
+
+# --- Yarım indirmeler ve arşivler ---
+*.part
+*.tmp
+*.zip
+*.tar.gz
+*.tar.xz
+
+# --- Günlükler ve önbellekler ---
+*.log
+__pycache__/
+*.pyc
+
+# --- İşletim sistemi / düzenleyici ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+desktop.ini

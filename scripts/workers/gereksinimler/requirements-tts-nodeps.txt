@@ -1,0 +1,5 @@
+# --no-deps ile kurulur: omnivoice'un bildirdiği gradio, tensorboardx, webdataset, librosa yalnızca demo/eğitim/mp3
+# içindir; çıkarım için gerekenler (torch, torchaudio, transformers, accelerate, soundfile, pydub, numpy)
+# requirements-tts.txt'de sabitlenmiştir.
+omnivoice==0.2.1 \
+    --hash=sha256:23f113ef51116a16308b55c4c2ac9c08efca7dfb594802f5c8adfb7523313ccc
