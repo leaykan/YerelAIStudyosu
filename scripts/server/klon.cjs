@@ -274,16 +274,117 @@ module.exports = function klonAltyapisi(ctx) {
 
   const REF = path.join(ROOT, "app", "reference-voices");
   const ORNEKLER = path.join(REF, "_ornekler");
+  // -- Kullanıcıya özel klon sesleri ---------------------------------------------
+  // Ses biyometrik veridir: her klon (ve sesli sohbetten toplanan örnekler, klon ayarları) onu ekleyen kullanıcıya
+  // aittir. Başka kullanıcı listeleyemez, dinleyemez, düzenleyemez, silemez, Vega'nın sesi olarak seçemez.
+  // Sahibi kaydedilmemiş eski sesler yalnızca yöneticiye görünür.
+  const kim = () => { try { return (typeof ctx.aktifKullanici === "function" && ctx.aktifKullanici()) || {}; } catch (_) { return {}; } };
+  const kurulumVar = () => { try { return typeof ctx.kurulumVar === "function" && !!ctx.kurulumVar(); } catch (_) { return false; } };
+  function sahibiMi(dosya) {
+    if (!kurulumVar()) return true;
+    const k = kim();
+    if (!k.id) return false;
+    const o = onayOku(String(dosya || ""));
+    return o && o.sahip ? o.sahip === k.id : !!k.yonetici;
+  }
+  // -- Ses kayıtları diskte şifreli -------------------------------------------------
+  // Klon referansları, sesli sohbet örnekleri ve geçici yüklemeler sahibinin (giriş yapan kullanıcının) şifreden türetilen
+  // anahtarıyla şifrelenir: USB/disk ele geçirilse de ses alınamaz. Ses motoru açık WAV okuduğu için kullanım anında
+  // BU BİLGİSAYARIN geçici klasörüne (taşınabilir diske değil) açık kopya yazılır; çıkışta, kapanışta ve açılışta silinir.
+  const SES_ISARETI = Buffer.from("YASK1");
+  const ACIK = path.join(require("os").tmpdir(), "yerel-ai-klon");
+  try { fs.rmSync(ACIK, { recursive: true, force: true }); } catch (_) {}
+  try { fs.mkdirSync(ACIK, { recursive: true }); } catch (_) {}
+  process.on("exit", () => { try { fs.rmSync(ACIK, { recursive: true, force: true }); } catch (_) {} });
+  const sesSifreliMi = (b) => Buffer.isBuffer(b) && b.length > 33 && b.subarray(0, 5).equals(SES_ISARETI);
+  const sifrelemeVar = () => kurulumVar() && typeof ctx.ikiliSifrele === "function";
+  function sesYaz(tam, buf, sahip) {
+    const icerik = sifrelemeVar() && sahip ? Buffer.concat([SES_ISARETI, ctx.ikiliSifrele(sahip, buf)]) : buf;
+    const tmp = tam + ".tmp";
+    fs.writeFileSync(tmp, icerik);
+    fs.renameSync(tmp, tam);
+  }
+  function sesOku(tam, sahip) {
+    const b = fs.readFileSync(tam);
+    if (!sesSifreliMi(b)) return b;
+    const o = sahip ? null : onayOku(path.basename(tam));
+    const id = sahip || (o && o.sahip) || kim().id;
+    if (!id) throw hataOlustur("Ses kaydının sahibi bulunamadı.", 403);
+    return ctx.ikiliCoz(id, b.subarray(5));
+  }
+  const acikOnek = (sahip, dosya) => `${String(sahip || "genel").replace(/[^a-z0-9]/gi, "")}-${tabanAdi(dosya).replace(/[^\w.-]/g, "_")}`;
+  // Ses motoru için açık kopya (yalnızca sahibi giriş yapmışken açılabilir)
+  function motorYolu(dosya, { denetle = true } = {}) {
+    const d = path.basename(String(dosya || ""));
+    const tam = denetle ? dosyaDogrula(d) : path.join(REF, d);
+    const o = onayOku(d);
+    const sahip = (o && o.sahip) || "";
+    const hedef = path.join(ACIK, acikOnek(sahip, d) + path.extname(d).toLowerCase());
+    if (!fs.existsSync(hedef)) {
+      fs.mkdirSync(ACIK, { recursive: true });
+      fs.writeFileSync(hedef, sesOku(tam, sahip || undefined));
+      const m = metinOku(d);
+      if (m) fs.writeFileSync(hedef.replace(/\.[^.]+$/, ".txt"), m + "\n", "utf8");
+    }
+    return hedef;
+  }
+  function acikTemizle({ sahip, dosya } = {}) {
+    let liste = [];
+    try { liste = fs.readdirSync(ACIK); } catch (_) { return; }
+    const onek = dosya ? acikOnek(sahip, dosya) + "." : sahip ? String(sahip).replace(/[^a-z0-9]/gi, "") + "-" : "";
+    for (const f of liste) if (!onek || f.startsWith(onek)) { try { fs.unlinkSync(path.join(ACIK, f)); } catch (_) {} }
+  }
+  // Eski (açık) kayıt: sahibi giriş yapmışken şifrelenir; sahipsiz eski kayıt yöneticiye geçer
+  function sesiKoru(d) {
+    if (!sifrelemeVar()) return;
+    const k = kim();
+    if (!k.id) return;
+    const tam = path.join(REF, d);
+    const o = onayOku(d);
+    if (!o) return;
+    if (!o.sahip && k.yonetici) { o.sahip = k.id; fs.writeFileSync(onayYolu(d), JSON.stringify(o, null, 2), "utf8"); }
+    if (o.sahip !== k.id) return;
+    try {
+      const b = fs.readFileSync(tam);
+      if (sesSifreliMi(b)) return;
+      if (!o.sureSn) { const sn = wavSuresi(tam); if (sn) { o.sureSn = sn; fs.writeFileSync(onayYolu(d), JSON.stringify(o, null, 2), "utf8"); } }
+      sesYaz(tam, b, k.id);
+      gunluk(`klon kaydı şifrelendi: ${d}`);
+    } catch (err) { gunluk(`klon kaydı şifrelenemedi: ${err.message}`); }
+  }
+  let eskiOrneklerTasindi = false;
+  function ornekKlasoru() {
+    const k = kim();
+    if (!kurulumVar() || !k.id) return ORNEKLER;
+    const d = path.join(ORNEKLER, String(k.id).replace(/[^a-z0-9]/gi, ""));
+    // Kullanıcı girişinden önce toplanmış örnekler ilk yöneticiye taşınır
+    if (k.yonetici && !eskiOrneklerTasindi) {
+      eskiOrneklerTasindi = true;
+      try {
+        const eski = fs.readdirSync(ORNEKLER).filter((f) => /^\d{13}-[a-f0-9]{6}\.(wav|json)$/.test(f));
+        if (eski.length) { fs.mkdirSync(d, { recursive: true }); for (const f of eski) { try { fs.renameSync(path.join(ORNEKLER, f), path.join(d, f)); } catch (_) {} } }
+      } catch (_) {}
+    }
+    return d;
+  }
   const GECICI = path.join(REF, "_gecici");
   const AYAR_DOSYASI = path.join(ROOT, "app", "config", "klon-ayarlari.json");
   for (const k of [REF, path.dirname(AYAR_DOSYASI)]) { try { fs.mkdirSync(k, { recursive: true }); } catch (_) {} }
 
   // -- Ayarlar ---------------------------------------------------------------
   const VARSAYILAN = { ornekTopla: false, ornekOnay: null, vegaKlonSesi: false, vegaKlonDosyasi: "", zamanAsimiSn: VARSAYILAN_ZAMAN_ASIMI_SN, zamanAsimiSurum: 3, olcum: null };
+  const KISISEL = ["ornekTopla", "ornekOnay", "vegaKlonSesi", "vegaKlonDosyasi"];
   function ayarlariOku() {
     try {
       const v = JSON.parse(fs.readFileSync(AYAR_DOSYASI, "utf8"));
       const a = { ...VARSAYILAN, ...(v && typeof v === "object" ? v : {}) };
+      // Kullanıcı varsa kişisel alanlar o kullanıcının kaydından gelir (eski genel değerler yalnızca yöneticiye)
+      const k = kim();
+      if (kurulumVar()) {
+        const kendi = k.id && v && v.kullanicilar && v.kullanicilar[k.id];
+        for (const alan of KISISEL) a[alan] = kendi ? (kendi[alan] ?? VARSAYILAN[alan]) : (k.yonetici ? a[alan] : VARSAYILAN[alan]);
+      }
+      delete a.kullanicilar;
       // Eski sürümde süre sınırı model yüklemesini de kapsıyordu (varsayılan 180 sn). Artık yükleme ayrı
       // sayıldığı için kullanıcının değiştirmediği eski varsayılan yeni varsayılana (90 sn) çekilir.
       if (!(v && v.zamanAsimiSurum >= 2) && Number(a.zamanAsimiSn) === 180) a.zamanAsimiSn = VARSAYILAN_ZAMAN_ASIMI_SN;
@@ -294,11 +395,20 @@ module.exports = function klonAltyapisi(ctx) {
   }
   function ayarlariYaz(v) {
     const tmp = AYAR_DOSYASI + ".tmp";
+    let disk = {};
+    try { disk = JSON.parse(fs.readFileSync(AYAR_DOSYASI, "utf8")) || {}; } catch (_) {}
+    const k = kim();
+    if (kurulumVar()) {
+      if (!k.id) throw hataOlustur("Giriş yapmanız gerekiyor.", 401);
+      const kisisel = {}; for (const alan of KISISEL) kisisel[alan] = v[alan];
+      const genel = { ...v }; for (const alan of KISISEL) genel[alan] = disk[alan] ?? VARSAYILAN[alan];
+      v = { ...genel, kullanicilar: { ...(disk.kullanicilar || {}), [k.id]: kisisel } };
+    } else if (disk.kullanicilar) v = { ...v, kullanicilar: disk.kullanicilar };
     fs.writeFileSync(tmp, JSON.stringify({ ...v, zamanAsimiSurum: 3 }, null, 2), "utf8");
     fs.renameSync(tmp, AYAR_DOSYASI);
   }
   function ayarOzeti(a = ayarlariOku()) {
-    const vegaGecerli = a.vegaKlonSesi && dosyaGecerliMi(a.vegaKlonDosyasi) && onayliMi(a.vegaKlonDosyasi);
+    const vegaGecerli = a.vegaKlonSesi && dosyaGecerliMi(a.vegaKlonDosyasi) && onayliMi(a.vegaKlonDosyasi) && sahibiMi(a.vegaKlonDosyasi);
     const o = a.olcum && typeof a.olcum === "object" ? a.olcum : {};
     const sayi = (x) => (Number.isFinite(Number(x)) && Number(x) > 0 ? Math.round(Number(x) * 10) / 10 : null);
     return {
@@ -378,6 +488,7 @@ module.exports = function klonAltyapisi(ctx) {
     if (!dosyaGecerliMi(d)) throw hataOlustur("Geçersiz klon dosyası.");
     const tam = path.join(REF, d);
     if (!fs.existsSync(tam) || !fs.statSync(tam).isFile()) throw hataOlustur("Klon ses bulunamadı.", 404);
+    if (!sahibiMi(d)) throw hataOlustur("Bu klon ses size ait değil.", 403);
     return tam;
   }
   const tabanAdi = (d) => d.replace(SES_UZANTI, "");
@@ -458,13 +569,15 @@ module.exports = function klonAltyapisi(ctx) {
       const tam = path.join(REF, d);
       let st;
       try { st = fs.statSync(tam); if (!st.isFile()) continue; } catch (_) { continue; }
+      if (!sahibiMi(d)) continue;
+      sesiKoru(d);
       const o = onayOku(d);
       const kayit = {
         dosya: d,
         sesKimligi: `omnivoice:klon_${d}`,
         ad: gorunenAd(d),
         metin: metinOku(d),
-        sure: /\.wav$/i.test(d) ? wavSuresi(tam) : null,
+        sure: /\.wav$/i.test(d) ? (wavSuresi(tam) ?? (o && o.sureSn) ?? null) : null,
         boyut: st.size,
         olusturma: (o && o.tarih) || st.mtime.toISOString(),
       };
@@ -497,7 +610,7 @@ module.exports = function klonAltyapisi(ctx) {
     geciciTemizle();
     const belirtec = crypto.randomBytes(12).toString("hex");
     const y = geciciYolu(belirtec);
-    fs.writeFileSync(y.wav, wavBuf);
+    sesYaz(y.wav, wavBuf, kim().id);
     fs.writeFileSync(y.bilgi, JSON.stringify(bilgi), "utf8");
     return belirtec;
   }
@@ -546,9 +659,11 @@ module.exports = function klonAltyapisi(ctx) {
   // -- Sesli sohbet örnekleri ----------------------------------------------------
   function ornekleriListele() {
     let ad = [];
-    try { ad = fs.readdirSync(ORNEKLER).filter((f) => /^\d{13}-[a-f0-9]{6}\.wav$/.test(f)).sort(); } catch (_) {}
+    try { ad = fs.readdirSync(ornekKlasoru()).filter((f) => /^\d{13}-[a-f0-9]{6}\.wav$/.test(f)).sort(); } catch (_) {}
     return ad.map((f) => {
-      const tam = path.join(ORNEKLER, f);
+      const tam = path.join(ornekKlasoru(), f);
+      // Eski açık örnek: giriş yapan sahibin anahtarıyla şifrelenir
+      try { if (sifrelemeVar() && kim().id) { const b = fs.readFileSync(tam); if (!sesSifreliMi(b)) sesYaz(tam, b, kim().id); } } catch (_) {}
       let boyut = 0, bilgi = {};
       try { boyut = fs.statSync(tam).size; } catch (_) {}
       try { bilgi = JSON.parse(fs.readFileSync(tam.replace(/\.wav$/, ".json"), "utf8")) || {}; } catch (_) {}
@@ -580,12 +695,12 @@ module.exports = function klonAltyapisi(ctx) {
   function ornekleriSil() {
     let silinen = 0;
     try {
-      for (const f of fs.readdirSync(ORNEKLER)) {
+      for (const f of fs.readdirSync(ornekKlasoru())) {
         if (!/^\d{13}-[a-f0-9]{6}\.(wav|json)$/.test(f)) continue;
-        try { fs.unlinkSync(path.join(ORNEKLER, f)); if (f.endsWith(".wav")) silinen++; } catch (_) {}
+        try { fs.unlinkSync(path.join(ornekKlasoru(), f)); if (f.endsWith(".wav")) silinen++; } catch (_) {}
       }
     } catch (_) {}
-    try { fs.rmdirSync(ORNEKLER); } catch (_) {}
+    try { fs.rmdirSync(ornekKlasoru()); } catch (_) {}
     return silinen;
   }
 
@@ -606,10 +721,10 @@ module.exports = function klonAltyapisi(ctx) {
       const kirpikSn = kirpik.length / hiz;
       const kps = temiz.length / Math.max(0.5, kirpikSn);    // saniyede karakter: uydurma metni ayıklar
       const uygun = kirpikSn >= 3 && kirpikSn <= 12 && kps >= 4 && kps <= 30 && analiz.snr >= 4 && analiz.kirpikOrani < 0.001;
-      fs.mkdirSync(ORNEKLER, { recursive: true });
+      fs.mkdirSync(ornekKlasoru(), { recursive: true });
       const ad = `${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
-      fs.writeFileSync(path.join(ORNEKLER, ad + ".wav"), wavKodla(ornekler, hiz));
-      fs.writeFileSync(path.join(ORNEKLER, ad + ".json"), JSON.stringify({
+      sesYaz(path.join(ornekKlasoru(), ad + ".wav"), wavKodla(ornekler, hiz), kim().id);
+      fs.writeFileSync(path.join(ornekKlasoru(), ad + ".json"), JSON.stringify({
         metin: temiz, sure: Math.round(sure * 100) / 100, kirpikSn: Math.round(kirpikSn * 100) / 100,
         snr: Math.round(analiz.snr * 10) / 10, uygun, tarih: new Date().toISOString(),
       }), "utf8");
@@ -627,7 +742,7 @@ module.exports = function klonAltyapisi(ctx) {
     for (const o of ornekleriListele()) {
       if (!o.metin || halusinasyonMu(o.metin)) continue;
       try {
-        const { hiz, ornekler } = wavCoz(fs.readFileSync(o.tam));
+        const { hiz, ornekler } = wavCoz(sesOku(o.tam, kim().id));
         const analiz = sesCozumle(ornekler, hiz);
         const k = sessizligiKirp(ornekler, hiz, analiz);
         const sn = k.length / hiz;
@@ -682,13 +797,14 @@ module.exports = function klonAltyapisi(ctx) {
     const dosya = taban + ".wav";
     const hedef = path.join(REF, dosya);
     if (!pathInside(hedef, REF)) throw hataOlustur("Geçersiz dosya adı.");
-    const wav = fs.readFileSync(y.wav);
+    const wav = sesOku(y.wav, kim().id);
     fs.writeFileSync(path.join(REF, taban + ".txt"), temizMetin + "\n", "utf8");
     fs.writeFileSync(onayYolu(dosya), JSON.stringify({
       ...kayit, ad: gorunen, dosya, sesSha256: crypto.createHash("sha256").update(wav).digest("hex"), sureSn: bilgi.sure || null,
+      sahip: kim().id || undefined,
     }, null, 2), "utf8");
-    // Ses en son yazılır: liste, onay kaydı hazır olmadan bu sesi göremez
-    fs.writeFileSync(hedef, wav);
+    // Ses en son yazılır: liste, onay kaydı hazır olmadan bu sesi göremez (sahibinin anahtarıyla şifreli)
+    sesYaz(hedef, wav, kim().id);
     try { fs.unlinkSync(y.wav); } catch (_) {}
     try { fs.unlinkSync(y.bilgi); } catch (_) {}
     gunluk(`klon eklendi: ${dosya} (kaynak: ${kaynak}, ses sahibi: ${kayit.sesSahibi}, ${bilgi.sure || "?"} sn)`);
@@ -697,6 +813,7 @@ module.exports = function klonAltyapisi(ctx) {
 
   function klonDuzenle({ dosya, yeniAd, metin }) {
     const tam = dosyaDogrula(dosya);
+    acikTemizle({ sahip: (onayOku(dosya) || {}).sahip, dosya });
     if (!onayliMi(dosya)) throw hataOlustur("Bu ses için onay kaydı yok; önce onay verin.", 403);
     let sonuc = { dosya, ad: gorunenAd(dosya) };
     if (metin !== undefined) {
@@ -733,6 +850,7 @@ module.exports = function klonAltyapisi(ctx) {
 
   function klonSil({ dosya }) {
     const tam = dosyaDogrula(dosya);
+    acikTemizle({ sahip: (onayOku(dosya) || {}).sahip, dosya });
     fs.unlinkSync(tam);
     for (const p of [...metinYollari(dosya), onayYolu(dosya)]) { try { fs.unlinkSync(p); } catch (_) {} }
     const a = ayarlariOku();
@@ -745,8 +863,12 @@ module.exports = function klonAltyapisi(ctx) {
   function mevcutSesiOnayla({ dosya, onay }) {
     const tam = dosyaDogrula(dosya);
     const kayit = onayKaydiUret(onay, { kaynak: "elle-eklenen" });
-    const sha = crypto.createHash("sha256").update(fs.readFileSync(tam)).digest("hex");
-    fs.writeFileSync(onayYolu(dosya), JSON.stringify({ ...kayit, ad: tabanAdi(dosya), dosya, sesSha256: sha }, null, 2), "utf8");
+    const sesVerisi = sesOku(tam);
+    const sha = crypto.createHash("sha256").update(sesVerisi).digest("hex");
+    const eskiOnay = onayOku(dosya);
+    const sahipId = (eskiOnay && eskiOnay.sahip) || kim().id || undefined;
+    fs.writeFileSync(onayYolu(dosya), JSON.stringify({ ...kayit, ad: tabanAdi(dosya), dosya, sesSha256: sha, sahip: sahipId, sureSn: wavSuresi(tam) || undefined }, null, 2), "utf8");
+    if (sahipId && !sesSifreliMi(fs.readFileSync(tam))) sesYaz(tam, sesVerisi, sahipId);
     gunluk(`elle eklenen sese onay verildi: ${dosya}`);
     return { dosya, sesKimligi: `omnivoice:klon_${dosya}` };
   }
@@ -792,13 +914,13 @@ module.exports = function klonAltyapisi(ctx) {
     if (govde.zamanAsimiSn !== undefined) yeni.zamanAsimiSn = zamanAsimiNorm(govde.zamanAsimiSn);
     if (govde.vegaKlonDosyasi !== undefined) {
       const d = String(govde.vegaKlonDosyasi || "");
-      if (d && !onayliMi(d)) throw hataOlustur("Seçilen klon ses bulunamadı ya da onay kaydı yok.", 404);
+      if (d && (!onayliMi(d) || !sahibiMi(d))) throw hataOlustur("Seçilen klon ses bulunamadı ya da onay kaydı yok.", 404);
       yeni.vegaKlonDosyasi = d;
     }
     if (govde.vegaKlonSesi !== undefined) {
       const ac = govde.vegaKlonSesi === true;
       if (ac) {
-        if (!yeni.vegaKlonDosyasi || !onayliMi(yeni.vegaKlonDosyasi) || !fs.existsSync(path.join(REF, yeni.vegaKlonDosyasi))) {
+        if (!yeni.vegaKlonDosyasi || !onayliMi(yeni.vegaKlonDosyasi) || !sahibiMi(yeni.vegaKlonDosyasi) || !fs.existsSync(path.join(REF, yeni.vegaKlonDosyasi))) {
           const e = hataOlustur("Önce bir klon ses oluşturun ve seçin.", 409);
           e.code = "KLON_YOK";
           throw e;
@@ -882,7 +1004,7 @@ module.exports = function klonAltyapisi(ctx) {
     const calisanAcikti = calisanCalisiyorMu() === true;
     gunluk(`klon ses hazırlanıyor${neden ? ` (${neden})` : ""}: ${dosya}${calisanAcikti ? " — model zaten bellekte" : " — model yükleniyor, işlemcide birkaç dakika sürebilir"}`);
     Promise.resolve()
-      .then(() => ctx.omnivoiceIsit(path.join(REF, dosya)))
+      .then(() => ctx.omnivoiceIsit(motorYolu(dosya, { denetle: false })))
       .then((r) => {
         if (nesil !== isitNesli) return;
         const sn = Math.round((Date.now() - hz.baslangic) / 100) / 10;
@@ -1048,10 +1170,10 @@ module.exports = function klonAltyapisi(ctx) {
     });
   }
 
-  function sesGonder(res, tam) {
-    const st = fs.statSync(tam);
-    res.writeHead(200, { "Content-Type": /\.flac$/i.test(tam) ? "audio/flac" : /\.ogg$/i.test(tam) ? "audio/ogg" : "audio/wav", "Content-Length": st.size, "Cache-Control": "no-store" });
-    fs.createReadStream(tam).pipe(res);
+  function sesGonder(res, tam, sahip) {
+    const b = sesOku(tam, sahip);
+    res.writeHead(200, { "Content-Type": /\.flac$/i.test(tam) ? "audio/flac" : /\.ogg$/i.test(tam) ? "audio/ogg" : "audio/wav", "Content-Length": b.length, "Cache-Control": "no-store" });
+    res.end(b);
   }
 
   // omnivoiceKurulu: true | false | null (denetim sürüyor; anahtar açılırken sunucu kesin denetler)
@@ -1077,7 +1199,7 @@ module.exports = function klonAltyapisi(ctx) {
         if (gecici) {
           const y = geciciYolu(gecici);
           if (!fs.existsSync(y.wav)) throw hataOlustur("Ses bulunamadı.", 404);
-          sesGonder(res, y.wav);
+          sesGonder(res, y.wav, kim().id);
         } else {
           sesGonder(res, dosyaDogrula(url.searchParams.get("dosya")));
         }
@@ -1149,6 +1271,10 @@ module.exports = function klonAltyapisi(ctx) {
     handle,
     ornekKaydet,
     onayliMi,
+    sahibiMi,
+    motorYolu,
+    acikKlasoru: ACIK,
+    acikTemizle,
     gorunenAd,
     sureliSentez,
     isit,

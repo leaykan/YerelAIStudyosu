@@ -241,6 +241,13 @@ Sihirbaz atlanabilir; her şey sonradan Model Yöneticisi'nden indirilebilir.
 
 - Sunucu yalnızca **yerel** isteklere yanıt verir; başka sitelerden gelen istekler ve çerçeve içine gömme reddedilir.
   Uygulamayı ağa / internete açmayın (uzaktan erişim için parola, HTTPS ve VPN gerekir; bu sürümde yoktur).
+- Sohbetler ve kişisel hafıza diskte, kullanıcının şifresinden türetilen anahtarla şifrelidir (scrypt + AES-256-GCM); şifre bilinmeden
+  okunamaz. Ses klonu kayıtları ve sesli sohbet örnekleri de sahibinin anahtarıyla şifrelidir; ses motoru için açık kopya yalnızca
+  kullanım anında bu bilgisayarın geçici klasörüne yazılır, çıkışta ve kapanışta silinir. Üretilen görsel/ses/video dosyaları
+  şifrelenmez; yalnızca sahibine erişim izni verilir.
+  Uygulama klasörünü taşınabilir diskte taşıyorsanız bunu göz önünde bulundurun (gerekirse Windows BitLocker To Go kullanın).
+- Ses klonları kullanıcıya özeldir. Sistem ayarlarını etkileyen işlemler (bulut anahtarları, model indirme/silme, temizlik, kurulum,
+  güncelleme) yalnızca yöneticiye açıktır.
 - Kullanıcı oluşturulduktan sonra sunucu uç noktaları oturum ister; oturum çerezi HttpOnly + SameSite=Strict'tir, uygulama her açılışta
   yeniden giriş ister. Hatalı girişler sınırlanır. Bir kullanıcının üretim dosyalarını başka bir kullanıcı göremez, indiremez, silemez.
 - Bulut API anahtarları uygulamaya gömülü değildir; Windows'ta DPAPI ile şifrelenir, arayüze maskeli döner, Gemini anahtarı adres satırında değil başlıkta gönderilir.

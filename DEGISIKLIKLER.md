@@ -4,7 +4,24 @@ Bu belge, **Yerel AI Stüdyosu**'nun temel aldığı DD:YZ "Sansürsüz Lokal AI
 neleri değiştirdiğini özetler. Bu çatal leaykan ve Claude (Anthropic) tarafından geliştirildi (Eylül–Kasım 2026); asıl sahip ve ana geliştirici DD:YZ (Tech Jarves)'tir.
 Orijinal geliştirici bu değişiklikleri dilediği gibi kullanabilir.
 
-## 1.0.0 — ilk herkese açık sürüm (hazırlanıyor)
+## 1.0.1 — güvenlik
+
+İlk sürümü inceleyen geliştiricilerin bildirdiği açıklar kapatıldı:
+- **Diskte şifreleme:** sohbetler, kişisel hafıza ve ısınma istemi her kullanıcının kendi şifresinden türetilen anahtarla
+  (scrypt + AES-256-GCM) şifrelenir. Disk ya da USB ele geçirilse, `kullanicilar.json` silinse bile bu dosyalar şifre bilinmeden
+  okunamaz. Veri anahtarı yalnızca giriş yapılmışken bellekte durur. Eski açık dosyalar ilk girişte otomatik şifrelenir;
+  girişsiz dönemden kalan açık sohbetler (`app/chat-history`) yöneticinin şifreli arşivine taşınıp silinir.
+  Şifre değişince anahtar yeniden sarılır (veri kaybı yok). Yönetici bir kullanıcının şifresini sıfırlarsa o kullanıcının eski verisi
+  açılamaz; silinmez, kilitli klasörde kalır.
+- **Ses klonları kullanıcıya özel:** her klon, onu ekleyen kullanıcıya aittir; başka kullanıcı listeleyemez, dinleyemez, düzenleyemez,
+  silemez, Vega'nın sesi olarak seçemez. Sesli sohbetten toplanan örnekler ve klon ayarları da kullanıcıya özel. Sahibi bilinmeyen
+  eski sesler yalnızca yöneticiye görünür. Klon kayıtları, sesli sohbet örnekleri ve geçici yüklemeler de sahibinin anahtarıyla
+  diskte şifreli; ses motoru açık kopyayı yalnızca kullanım anında bu bilgisayarın geçici klasöründen okur (taşınabilir diske açık
+  ses yazılmaz), kopyalar çıkışta, kapanışta ve açılışta silinir. Eski açık kayıtlar sahibi giriş yapınca şifrelenir.
+- **Yönetici yetkisi:** bulut anahtarları, model indirme/silme/içe aktarma, temizlik, paket/özellik kurulumu, güncelleme, kurulum
+  sihirbazı ve motor ayarları artık yalnızca yöneticiye açık. Döküm (sesten metne) silme yalnızca sahibine.
+
+## 1.0.0 — ilk herkese açık sürüm
 
 ### Kimlik
 - Ad "Yerel AI Stüdyosu" oldu; DD:YZ adı, orijinal telif satırı ve atıflar korundu (`LICENSE`, `ATIFLAR.md`, açılış ekranları).

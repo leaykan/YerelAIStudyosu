@@ -41,6 +41,142 @@ module.exports = function kullaniciAltyapisi(ctx) {
   const kullaniciKlasoru = (id) => path.join(KOK, String(id).replace(/[^a-z0-9]/gi, ""));
   const ozet = (s) => crypto.createHash("sha256").update(String(s)).digest("hex");
 
+  // -- Diskte şifreleme -----------------------------------------------------------
+  // Her kullanıcının rastgele bir veri anahtarı (32 bayt) vardır; bu anahtar kullanıcının ŞİFRESİNDEN scrypt ile
+  // türetilen anahtarla AES-256-GCM ile sarılıp kullanicilar.json'da saklanır. Sohbetler, hafıza ve ısınma istemi
+  // bu veri anahtarıyla şifrelenir. Veri anahtarı yalnızca giriş yapılmışken bellekte durur (diske açık yazılmaz).
+  // Şifre bilinmeden (USB / disk ele geçirilse, kullanicilar.json silinse bile) bu dosyalar okunamaz.
+  const { AsyncLocalStorage } = require("async_hooks");
+  const BAGLAM = new AsyncLocalStorage();
+  const ANAHTARLAR = new Map(); // kullanıcı kimliği -> veri anahtarı (yalnızca bellekte)
+  const ISARET = "yasSifreli";
+  const kekTuret = (sifre, tuzHex) => crypto.scryptSync(String(sifre).normalize("NFC"), Buffer.from(tuzHex, "hex"), 32, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 });
+  function anahtarSar(dek, sifre, id) {
+    const tuz = crypto.randomBytes(16).toString("hex");
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv("aes-256-gcm", kekTuret(sifre, tuz), iv);
+    c.setAAD(Buffer.from("anahtar:" + id));
+    const veri = Buffer.concat([c.update(dek), c.final()]);
+    return { tuz, iv: iv.toString("hex"), etiket: c.getAuthTag().toString("hex"), veri: veri.toString("hex") };
+  }
+  function anahtarAc(s, sifre, id) {
+    const d = crypto.createDecipheriv("aes-256-gcm", kekTuret(sifre, s.tuz), Buffer.from(s.iv, "hex"));
+    d.setAAD(Buffer.from("anahtar:" + id));
+    d.setAuthTag(Buffer.from(s.etiket, "hex"));
+    return Buffer.concat([d.update(Buffer.from(s.veri, "hex")), d.final()]);
+  }
+  function yoldanKullanici(yol) {
+    const rel = path.relative(KOK, path.resolve(yol));
+    if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+    const id = rel.split(path.sep)[0];
+    return /^[a-f0-9]{8,32}$/.test(id) ? id : null;
+  }
+  const sifreliMi = (ham) => typeof ham === "string" && ham.startsWith('{"' + ISARET + '"');
+  function metinSifrele(id, metin) {
+    const dek = ANAHTARLAR.get(id);
+    if (!dek) throw new Error("Kullanıcının şifreleme anahtarı açık değil (giriş gerekli).");
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv("aes-256-gcm", dek, iv);
+    c.setAAD(Buffer.from("veri:" + id));
+    const v = Buffer.concat([c.update(Buffer.from(String(metin), "utf8")), c.final()]);
+    return JSON.stringify({ [ISARET]: 1, iv: iv.toString("base64"), etiket: c.getAuthTag().toString("base64"), veri: v.toString("base64") });
+  }
+  function metinCoz(id, ham) {
+    const dek = ANAHTARLAR.get(id);
+    if (!dek) throw new Error("Kullanıcının şifreleme anahtarı açık değil (giriş gerekli).");
+    const z = JSON.parse(ham);
+    const d = crypto.createDecipheriv("aes-256-gcm", dek, Buffer.from(z.iv, "base64"));
+    d.setAAD(Buffer.from("veri:" + id));
+    d.setAuthTag(Buffer.from(z.etiket, "base64"));
+    return Buffer.concat([d.update(Buffer.from(z.veri, "base64")), d.final()]).toString("utf8");
+  }
+  // Kullanıcı klasöründeki dosyalar şifreli okunur/yazılır; diğer yollar (girişsiz eski kurulum) olduğu gibi
+  function dosyaOku(yol) {
+    const ham = fs.readFileSync(yol, "utf8");
+    if (!sifreliMi(ham)) return ham;
+    const id = yoldanKullanici(yol);
+    if (!id) throw new Error("Şifreli dosyanın sahibi bulunamadı.");
+    return metinCoz(id, ham);
+  }
+  function dosyaYaz(yol, metin) {
+    const id = yoldanKullanici(yol);
+    const icerik = id ? metinSifrele(id, metin) : String(metin);
+    fs.mkdirSync(path.dirname(yol), { recursive: true });
+    const tmp = yol + ".tmp";
+    fs.writeFileSync(tmp, icerik, "utf8");
+    fs.renameSync(tmp, yol);
+  }
+  // Dosya yoksa yedek döner; varsa ama çözülemiyorsa HATA fırlatır (çözülemeyen veri boşla ezilmesin)
+  function sifreliJsonOku(yol, yedek) {
+    let ham;
+    try { ham = dosyaOku(yol); } catch (err) { if (err && err.code === "ENOENT") return yedek; throw err; }
+    return JSON.parse(ham);
+  }
+  const sifreliJsonYaz = (yol, veri) => dosyaYaz(yol, JSON.stringify(veri, null, 2));
+  // Kullanıcının açık (eski, şifresiz) dosyalarını şifreler
+  function kullaniciVerisiniSifrele(id) {
+    const d = kullaniciKlasoru(id);
+    const yollar = [path.join(d, "hafiza.json"), path.join(d, "isinma.json")];
+    try { for (const f of fs.readdirSync(path.join(d, "sohbetler"))) if (f.endsWith(".json")) yollar.push(path.join(d, "sohbetler", f)); } catch (_) {}
+    let n = 0;
+    for (const y of yollar) {
+      try { const ham = fs.readFileSync(y, "utf8"); if (sifreliMi(ham)) continue; dosyaYaz(y, ham); n += 1; } catch (_) {}
+    }
+    if (n) motorGunlugu(`[kullanıcı] ${n} dosya şifrelendi`);
+  }
+  // Girişsiz dönemden kalan açık sohbetler (app/chat-history) ilk yöneticinin şifreli arşivine taşınır, açık kopyalar silinir
+  function eskiSohbetleriTasi(id) {
+    if (!ESKI_SOHBETLER) return;
+    const hedef = path.join(kullaniciKlasoru(id), "sohbetler");
+    let dosyalar = [];
+    try { dosyalar = fs.readdirSync(ESKI_SOHBETLER).filter((f) => f.endsWith(".json")); } catch (_) { return; }
+    let n = 0;
+    for (const f of dosyalar) {
+      const kaynak = path.join(ESKI_SOHBETLER, f);
+      try {
+        if (!fs.existsSync(path.join(hedef, f))) dosyaYaz(path.join(hedef, f), fs.readFileSync(kaynak, "utf8"));
+        fs.unlinkSync(kaynak);
+        n += 1;
+      } catch (_) {}
+    }
+    if (n) motorGunlugu(`[kullanıcı] girişsiz dönemden kalan ${n} açık sohbet şifreli arşive taşındı`);
+  }
+  // Doğru şifreyle girişte: veri anahtarı açılır (yoksa oluşturulur), eski açık dosyalar şifrelenir
+  function anahtariAc(k, sifre, liste) {
+    let dek;
+    if (k.anahtar) dek = anahtarAc(k.anahtar, sifre, k.id);
+    else { dek = crypto.randomBytes(32); k.anahtar = anahtarSar(dek, sifre, k.id); jsonYaz(LISTE, { kullanicilar: liste }); }
+    ANAHTARLAR.set(k.id, dek);
+    kullaniciVerisiniSifrele(k.id);
+    if (k.yonetici) eskiSohbetleriTasi(k.id);
+  }
+  // İkili veri (ses klonu kayıtları) şifreleme: iv(12) + etiket(16) + veri; yalnızca sahibinin anahtarı açıksa
+  function ikiliSifrele(id, buf) {
+    const dek = ANAHTARLAR.get(id);
+    if (!dek) throw new Error("Kullanıcının şifreleme anahtarı açık değil (giriş gerekli).");
+    const iv = crypto.randomBytes(12);
+    const c = crypto.createCipheriv("aes-256-gcm", dek, iv);
+    c.setAAD(Buffer.from("ses:" + id));
+    const v = Buffer.concat([c.update(buf), c.final()]);
+    return Buffer.concat([iv, c.getAuthTag(), v]);
+  }
+  function ikiliCoz(id, buf) {
+    const dek = ANAHTARLAR.get(id);
+    if (!dek) throw new Error("Bu ses kaydının sahibi giriş yapmamış; kayıt açılamaz.");
+    const d = crypto.createDecipheriv("aes-256-gcm", dek, buf.subarray(0, 12));
+    d.setAAD(Buffer.from("ses:" + id));
+    d.setAuthTag(buf.subarray(12, 28));
+    return Buffer.concat([d.update(buf.subarray(28)), d.final()]);
+  }
+  // Anahtar bellekten silinince (çıkış, şifre sıfırlama) diğer modüller açık geçici kopyaları temizler
+  const kapanisDinleyicileri = [];
+  function anahtarKapat(id) {
+    ANAHTARLAR.delete(id);
+    for (const f of kapanisDinleyicileri) { try { f(id); } catch (_) {} }
+  }
+  // İstek bağlamı: diğer modüller (klon vb.) o anki kullanıcıyı buradan öğrenir
+  const aktif = () => BAGLAM.getStore() || {};
+
   function sifreOzeti(sifre, tuz) {
     return crypto.scryptSync(String(sifre).normalize("NFC"), Buffer.from(tuz, "hex"), 64, { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 }).toString("hex");
   }
@@ -79,7 +215,13 @@ module.exports = function kullaniciAltyapisi(ctx) {
   }
   function oturumKapat(req, res) {
     const belirtec = cerezOku(req);
-    if (belirtec) { const v = oturumlar(); delete v[ozet(belirtec)]; try { jsonYaz(OTURUMLAR, v); } catch (_) {} }
+    if (belirtec) {
+      const v = oturumlar();
+      const o = v[ozet(belirtec)];
+      delete v[ozet(belirtec)];
+      try { jsonYaz(OTURUMLAR, v); } catch (_) {}
+      if (o && !Object.values(v).some((x) => x && x.id === o.id)) anahtarKapat(o.id);
+    }
     res.setHeader("Set-Cookie", `${CEREZ}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0`);
   }
 
@@ -113,10 +255,10 @@ module.exports = function kullaniciAltyapisi(ctx) {
   const BASLIKLAR = ["Kişisel bilgiler", "Tercihler", "Projeler", "Devam eden işler", "Önemli kararlar"];
   const hafizaYolu = (id) => path.join(kullaniciKlasoru(id), "hafiza.json");
   function hafizaOku(id) {
-    const v = jsonOku(hafizaYolu(id), null) || {};
+    const v = sifreliJsonOku(hafizaYolu(id), null) || {};
     return { acik: v.acik !== false, bulutta: v.bulutta === true, notlar: Array.isArray(v.notlar) ? v.notlar : [], ozetlenen: v.ozetlenen || {} };
   }
-  function hafizaYaz(id, h) { fs.mkdirSync(kullaniciKlasoru(id), { recursive: true }); jsonYaz(hafizaYolu(id), h); }
+  function hafizaYaz(id, h) { sifreliJsonYaz(hafizaYolu(id), h); }
 
   function hafizaMetni(id) {
     const h = hafizaOku(id);
@@ -218,14 +360,16 @@ module.exports = function kullaniciAltyapisi(ctx) {
     const k = kurulumVar() ? oturumKullanicisi(req) : null;
     if (kurulumVar() && !k) return;
     const yol = isinmaYolu(k && k.id);
-    const eski = jsonOku(yol, {});
+    let eski = {};
+    try { eski = sifreliJsonOku(yol, {}) || {}; } catch (_) {}
     if (eski.sistem === sistem) return;
-    try { fs.mkdirSync(path.dirname(yol), { recursive: true }); jsonYaz(yol, { sistem }); } catch (_) {}
+    try { sifreliJsonYaz(yol, { sistem }); } catch (_) {}
   }
   let isiniyor = false;
   async function isit(id) {
     if (isiniyor || typeof ctx.llmIsit !== "function") return;
-    const v = jsonOku(isinmaYolu(id), null);
+    let v = null;
+    try { v = sifreliJsonOku(isinmaYolu(id), null); } catch (_) {}
     if (!v || !v.sistem) return;
     isiniyor = true;
     try { await ctx.llmIsit(v.sistem); motorGunlugu("[ısınma] sistem istemi önceden işlendi"); }
@@ -296,7 +440,7 @@ module.exports = function kullaniciAltyapisi(ctx) {
       }
       try {
         const dosya = path.join(kullaniciKlasoru(k.id), "sohbetler", `${String(sohbet.id).replace(/[^\w.-]/g, "")}.json`);
-        const guncel = jsonOku(dosya, sohbet);
+        const guncel = sifreliJsonOku(dosya, sohbet);
         await sohbetiOzetle(k.id, guncel);
       } catch (err) { motorGunlugu(`[hafıza] özet alınamadı: ${String(err.message || err).slice(0, 200)}`); }
     }, 90000));
@@ -327,14 +471,12 @@ module.exports = function kullaniciAltyapisi(ctx) {
       if (liste.some((x) => x.ad.toLocaleLowerCase("tr") === ad.toLocaleLowerCase("tr"))) { json(res, 409, { ok: false, error: "Bu kullanıcı adı zaten var." }); return true; }
       const tuz = crypto.randomBytes(16).toString("hex");
       const k = { id: crypto.randomBytes(8).toString("hex"), ad, tuz, sifre: sifreOzeti(sifre, tuz), olusturma: new Date().toISOString(), yonetici: liste.length === 0 };
+      const dek = crypto.randomBytes(32);
+      k.anahtar = anahtarSar(dek, sifre, k.id);
       liste.push(k);
       jsonYaz(LISTE, { kullanicilar: liste });
-      // İlk kullanıcı: mevcut (girişsiz) sohbet geçmişi onun arşivine kopyalanır
-      if (liste.length === 1 && ESKI_SOHBETLER) {
-        const hedef = path.join(kullaniciKlasoru(k.id), "sohbetler");
-        fs.mkdirSync(hedef, { recursive: true });
-        try { for (const f of fs.readdirSync(ESKI_SOHBETLER)) if (f.endsWith(".json")) fs.copyFileSync(path.join(ESKI_SOHBETLER, f), path.join(hedef, f)); } catch (_) {}
-      }
+      // İlk kullanıcı: mevcut (girişsiz) sohbet geçmişi onun şifreli arşivine taşınır
+      if (!mevcut) { ANAHTARLAR.set(k.id, dek); eskiSohbetleriTasi(k.id); }
       if (!mevcut) oturumAc(res, k); // ilk kullanıcı: doğrudan giriş; yönetici başkasını eklediyse oturum değişmez
       motorGunlugu(`[kullanıcı] yeni kullanıcı oluşturuldu`);
       json(res, 200, { ok: true, kullanici: { id: k.id, ad: k.ad, yonetici: !!k.yonetici } });
@@ -348,6 +490,8 @@ module.exports = function kullaniciAltyapisi(ctx) {
       const k = kullanicilar().find((x) => x.ad.toLocaleLowerCase("tr") === ad);
       const dogru = k && crypto.timingSafeEqual(Buffer.from(sifreOzeti(String(govde.sifre || ""), k.tuz), "hex"), Buffer.from(k.sifre, "hex"));
       if (!dogru) { hatalar.push(Date.now()); json(res, 401, { ok: false, error: "Kullanıcı adı ya da şifre hatalı." }); return true; }
+      try { anahtariAc(k, String(govde.sifre || ""), kullanicilar().map((x) => (x.id === k.id ? k : x))); }
+      catch (err) { motorGunlugu(`[kullanıcı] şifreleme anahtarı açılamadı: ${String(err.message || err).slice(0, 120)}`); json(res, 500, { ok: false, error: "Şifreli veriler açılamadı." }); return true; }
       oturumAc(res, k);
       setTimeout(() => { isit(k.id); }, 500);
       json(res, 200, { ok: true, kullanici: { id: k.id, ad: k.ad, yonetici: !!k.yonetici } });
@@ -370,6 +514,10 @@ module.exports = function kullaniciAltyapisi(ctx) {
       const x = liste.find((y) => y.id === k.id);
       if (!crypto.timingSafeEqual(Buffer.from(sifreOzeti(String(govde.eski || ""), x.tuz), "hex"), Buffer.from(x.sifre, "hex"))) { json(res, 401, { ok: false, error: "Mevcut şifre hatalı." }); return true; }
       if (String(govde.yeni || "").length < 6) { json(res, 400, { ok: false, error: "Yeni şifre en az 6 karakter olmalı." }); return true; }
+      let dek = ANAHTARLAR.get(x.id);
+      try { if (!dek && x.anahtar) dek = anahtarAc(x.anahtar, String(govde.eski || ""), x.id); } catch (_) {}
+      if (!dek) { dek = crypto.randomBytes(32); ANAHTARLAR.set(x.id, dek); }
+      x.anahtar = anahtarSar(dek, String(govde.yeni), x.id);
       x.tuz = crypto.randomBytes(16).toString("hex");
       x.sifre = sifreOzeti(String(govde.yeni), x.tuz);
       jsonYaz(LISTE, { kullanicilar: liste });
@@ -404,6 +552,17 @@ module.exports = function kullaniciAltyapisi(ctx) {
       } else if (islem === "sifirla") {
         const yeni = String(govde.sifre || "");
         if (yeni.length < 6) { json(res, 400, { ok: false, error: "Yeni şifre en az 6 karakter olmalı." }); return true; }
+        if (x.id === k.id) { json(res, 400, { ok: false, error: "Kendi şifrenizi \"Şifre değiştir\" ile değiştirin." }); return true; }
+        // Veriler kullanıcının eski şifresiyle şifreli: yönetici bunları açamaz. Eski veri silinmez, kilitli klasöre taşınır.
+        const d = kullaniciKlasoru(x.id);
+        const kilit = path.join(d, `kilitli-${new Date().toISOString().replace(/[:.]/g, "-")}`);
+        try {
+          fs.mkdirSync(kilit, { recursive: true });
+          for (const ad of ["sohbetler", "hafiza.json", "isinma.json"]) { try { fs.renameSync(path.join(d, ad), path.join(kilit, ad)); } catch (_) {} }
+          fs.writeFileSync(path.join(kilit, "BENIOKU.txt"), "Bu klasördeki sohbetler ve hafıza kullanıcının ESKİ şifresiyle şifrelidir; şifre sıfırlandığı için açılamaz.\n", "utf8");
+        } catch (_) {}
+        anahtarKapat(x.id);
+        x.anahtar = anahtarSar(crypto.randomBytes(32), yeni, x.id);
         x.tuz = crypto.randomBytes(16).toString("hex"); x.sifre = sifreOzeti(yeni, x.tuz);
         jsonYaz(LISTE, { kullanicilar: liste });
         const v = oturumlar(); for (const [a, o] of Object.entries(v)) if (o.id === x.id && x.id !== k.id) delete v[a]; try { jsonYaz(OTURUMLAR, v); } catch (_) {}
@@ -464,7 +623,8 @@ module.exports = function kullaniciAltyapisi(ctx) {
       (async () => {
         let toplam = 0;
         for (const f of dosyalar) {
-          const s = jsonOku(path.join(d, f), null);
+          let s = null;
+          try { s = sifreliJsonOku(path.join(d, f), null); } catch (_) {}
           if (!s || (hafizaOku(k.id).ozetlenen[s.id] || 0) >= (s.messages || []).length) continue;
           try { toplam += await sohbetiOzetle(k.id, s); } catch (err) { motorGunlugu(`[hafıza] tarama durdu: ${String(err.message || err).slice(0, 160)}`); break; }
         }
@@ -477,5 +637,7 @@ module.exports = function kullaniciAltyapisi(ctx) {
     return true;
   }
 
-  return { handle, sohbetKlasoru, mesajlaraHafizaEkle, sohbetKaydedildi, kurulumVar, oturumKullanicisi, isinmaKaydet, isit, isitSon, kullaniciKlasoru, aktifSahip, gorebilirMi };
+  return { handle, sohbetKlasoru, mesajlaraHafizaEkle, sohbetKaydedildi, kurulumVar, oturumKullanicisi, isinmaKaydet, isit, isitSon, kullaniciKlasoru, aktifSahip, gorebilirMi, dosyaOku, dosyaYaz, aktif, ikiliSifrele, ikiliCoz,
+    anahtarKapaninca: (f) => { if (typeof f === "function") kapanisDinleyicileri.push(f); },
+    istekBaglami: (req, fn) => { let k = null; try { k = kurulumVar() ? oturumKullanicisi(req) : null; } catch (_) {} return BAGLAM.run(k ? { id: k.id, yonetici: !!k.yonetici, kurulum: true } : { kurulum: kurulumVar() }, fn); } };
 };

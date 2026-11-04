@@ -101,6 +101,9 @@ export default function KullaniciHafiza({ showAlert, showConfirm }) {
                   <label style={kutu}>{sifirlama.ad} için yeni şifre<input className="m3-input" type="password" autoComplete="new-password" value={sifirlama.sifre} onChange={(e) => setSifirlama({ ...sifirlama, sifre: e.target.value })} /></label>
                   <button className="m3-btn m3-btn-filled" disabled={mesgul || sifirlama.sifre.length < 6} onClick={() => calistir(async () => { await kullaniciYonet(sifirlama.id, "sifirla", sifirlama.sifre); setSifirlama(null); }, "Şifre sıfırlandı.")}>Kaydet</button>
                   <button className="m3-btn m3-btn-outlined" onClick={() => setSifirlama(null)}>Vazgeç</button>
+                  <div style={{ flexBasis: "100%", fontSize: "0.78rem", color: "var(--md-sys-color-error)" }}>
+                    Dikkat: Sohbetler ve hafıza kullanıcının kendi şifresiyle şifrelidir. Şifre sıfırlanırsa {sifirlama.ad} adlı kullanıcının eski sohbetleri ve hafızası açılamaz (silinmez, kilitli klasörde kalır); yeni şifreyle boş bir arşivle başlar.
+                  </div>
                 </div>
               )}
               <details>

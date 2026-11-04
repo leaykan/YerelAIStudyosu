@@ -299,6 +299,10 @@ const ILK_KURULUM = require("../setup/ilk-kurulum-sunucu.cjs")({
 // Ses klonlama (OmniVoice): onay kaydı zorunlu, kayıtlar yalnızca bu bilgisayarda (app/reference-voices)
 const KLON = require("./klon.cjs")({
   ROOT, json, readJsonBody, motorGunlugu, pathInside, log: (...a) => console.log(...a),
+  // Sahiplik: her klon sesi onu ekleyen kullanıcıya aittir (ses biyometrik veridir)
+  aktifKullanici: () => KULLANICI.aktif(), kurulumVar: () => KULLANICI.kurulumVar(),
+  // Ses kayıtları sahibinin şifreden türetilen anahtarıyla şifrelenir
+  ikiliSifrele: (id, buf) => KULLANICI.ikiliSifrele(id, buf), ikiliCoz: (id, buf) => KULLANICI.ikiliCoz(id, buf),
   transcribeWavBuffer: (buf, secenek) => runExclusiveSpeechOperation(() => transcribeWavBuffer(buf, secenek)),
   speechAyari: () => speechSettings,
   omnivoiceKurulu: () => OZ.kuruluBiliniyorMu("tts-omnivoice"),
@@ -312,6 +316,8 @@ const KLON = require("./klon.cjs")({
   omnivoiceDurumu: () => (typeof OZ.calisanDurumu === "function" ? OZ.calisanDurumu("tts-omnivoice") : null),
   omnivoiceCanliTut: (ms) => (typeof OZ.calisanCanliTut === "function" ? OZ.calisanCanliTut("tts-omnivoice", ms) : false),
 });
+// Çıkışta / şifre sıfırlamada o kullanıcının açık (geçici) klon kopyaları silinir
+KULLANICI.anahtarKapaninca((id) => KLON.acikTemizle({ sahip: id }));
 
 const SPEECH_MODEL_CATALOG = [
   { id: "tiny.en", name: "Whisper Tiny English", filename: "ggml-tiny.en.bin", size: "75 MB", language: "English", recommended: false },
@@ -594,14 +600,14 @@ try { fs.mkdirSync(REFERANS_SESLER, { recursive: true }); } catch (_) {}
 function referansSesleri() {
   try {
     // Onay kaydı (<ad>.onay.json) olmayan sesler listelenmez; Metinden Sese > Klon sesleri'nden onay verilebilir
-    return fs.readdirSync(REFERANS_SESLER).filter((f) => /\.(wav|flac|ogg)$/i.test(f) && /^[\w .()-]+$/.test(f) && KLON.onayliMi(f))
+    return fs.readdirSync(REFERANS_SESLER).filter((f) => /\.(wav|flac|ogg)$/i.test(f) && /^[\w .()-]+$/.test(f) && KLON.onayliMi(f) && KLON.sahibiMi(f))
       .map((f) => ({ id: "klon_" + f, ad: `OmniVoice - Klon: ${KLON.gorunenAd(f)}`, cinsiyet: "-" }));
   } catch (_) { return []; }
 }
 // OmniVoice çalışanı tek ayarla açılır: ısıtma (klon.cjs) ve seslendirme aynı çalışanı kullanır.
 // cihaz "auto": PyTorch ekran kartını (CUDA) görüyorsa onu, yoksa işlemciyi kullanır.
 function omnivoiceCalisanAyari() {
-  return { threads: 4, referansKlasoru: REFERANS_SESLER, cihaz: "auto" };
+  return { threads: 4, referansKlasoru: KLON.acikKlasoru, cihaz: "auto" };
 }
 function pyTtsSesleri(motor) {
   const tanim = PY_TTS_MOTORLARI[motor];
@@ -634,7 +640,8 @@ async function synthesizePyTts(text, options = {}) {
         const dosya = path.join(REFERANS_SESLER, path.basename(secim.ses.slice(5)));
         if (!pathInside(dosya, REFERANS_SESLER) || !fs.existsSync(dosya)) throw new Error("Referans ses bulunamadı: " + secim.ses.slice(5));
         if (!KLON.onayliMi(path.basename(dosya))) throw new Error("Bu klon ses için onay kaydı yok. Metinden Sese > Klon sesleri bölümünden onay verin.");
-        istek.referans = dosya;
+        if (!KLON.sahibiMi(path.basename(dosya))) throw new Error("Bu klon ses size ait değil.");
+        istek.referans = KLON.motorYolu(path.basename(dosya)); // şifreli kayıt → bu bilgisayarın geçici klasöründe açık kopya
       }
     }
     const sonuc = await OZ.calisanIstek(`tts-${secim.motor}`, secim.motor, ayar, istek,
@@ -6591,7 +6598,7 @@ function getChatConversationPath(id, klasor = CHAT_HISTORY) {
 function saveChatConversation(conversation = {}, klasor = CHAT_HISTORY) {
   const saved = sanitizeChatConversationForStorage(conversation);
   const filePath = getChatConversationPath(saved.id, klasor);
-  fs.writeFileSync(filePath, JSON.stringify(saved, null, 2), "utf8");
+  KULLANICI.dosyaYaz(filePath, JSON.stringify(saved, null, 2)); // kullanıcı klasöründe şifreli
   return saved;
 }
 
@@ -6603,7 +6610,7 @@ function listChatConversations(klasor = CHAT_HISTORY) {
         try {
           const filePath = path.join(klasor, file);
           if (!pathInside(filePath, klasor)) return null;
-          const conversation = JSON.parse(fs.readFileSync(filePath, "utf8"));
+          const conversation = JSON.parse(KULLANICI.dosyaOku(filePath));
           const stat = fs.statSync(filePath);
           return {
             ...conversation,
@@ -8628,7 +8635,19 @@ function uzakErisimDenetle(req, res) {
 }
 
 // -- HTTP Server ---------------------------------------------------------------
-const server = http.createServer(async (req, res) => {
+const YONETICI_ISLEMLERI = [
+  /^\/api\/bulut\/(anahtar|anahtar-sil|model-ekle|model-sil|test)$/,
+  /^\/api\/(llm\/|speech\/|tts\/)?(delete-model|download-model|import-model)$/,
+  /^\/api\/(download-default-models|download-backend|download-openvino-model|cancel-download|cleanup|model-label|restart-backend|stop-backend)$/,
+  /^\/api\/llm\/model-settings$/,
+  /^\/api\/(ozellikler\/kur|paketler\/indir|model-arama\/kur)$/,
+  /^\/api\/studyo\/(kur|sil|klasor-ac)$/,
+  /^\/api\/guncelleme\//,
+  /^\/api\/ilk-kurulum\/(indir|iptal|tamam)$/,
+];
+// Her istek, o anki kullanıcının bağlamında işlenir (ses klonu sahipliği, şifreli dosyalar)
+const server = http.createServer((req, res) => KULLANICI.istekBaglami(req, () => anaIstekIsleyici(req, res)));
+async function anaIstekIsleyici(req, res) {
   // Başka bir sitenin bu arayüzü çerçeve içine gömmesini engelle (clickjacking)
   res.setHeader("X-Frame-Options", "DENY");
   res.setHeader("Content-Security-Policy", "frame-ancestors 'none'");
@@ -8661,8 +8680,14 @@ const server = http.createServer(async (req, res) => {
   {
     const yol = req.url.split("?")[0];
     const acik = yol.startsWith("/api/kullanici/") || (req.method === "GET" && ["/api/telemetry", "/api/hardware-specs", "/api/llm/status", "/api/status"].includes(yol));
-    if (yol.startsWith("/api/") && !acik && KULLANICI.kurulumVar() && !KULLANICI.oturumKullanicisi(req)) {
-      return json(res, 401, { ok: false, girisGerekli: true, error: "Giriş yapmanız gerekiyor." });
+    if (yol.startsWith("/api/") && !acik && KULLANICI.kurulumVar()) {
+      const oturum = KULLANICI.oturumKullanicisi(req);
+      if (!oturum) return json(res, 401, { ok: false, girisGerekli: true, error: "Giriş yapmanız gerekiyor." });
+      // Sistemi etkileyen işlemler (bulut anahtarları, model indirme/silme/içe aktarma, temizlik, paket/özellik kurulumu,
+      // güncelleme, kurulum sihirbazı, motor ayarları) yalnızca yönetici tarafından yapılabilir
+      if (!oturum.yonetici && req.method !== "GET" && YONETICI_ISLEMLERI.some((d) => d.test(yol))) {
+        return json(res, 403, { ok: false, yoneticiGerekli: true, error: "Bu işlem yalnızca yönetici tarafından yapılabilir." });
+      }
     }
   }
 
@@ -9060,6 +9085,7 @@ const server = http.createServer(async (req, res) => {
       }
       
       const metadata = JSON.parse(fs.readFileSync(jsonPath, "utf8"));
+      if (!KULLANICI.gorebilirMi(req, metadata.sahip)) return json(res, 403, { ok: false, error: "Bu dökümü silme yetkiniz yok." });
       const textFile = metadata.textFile ? path.basename(String(metadata.textFile)) : "";
       
       fs.unlinkSync(jsonPath);
@@ -10762,7 +10788,7 @@ async function getLlmfitRecommendations(useCase = "chat", limit = 10) {
     res.writeHead(200, { "Content-Type": mime });
     res.end(data);
   });
-});
+}
 
 server.timeout = 0; // Disable socket timeout for large model uploads/downloads
 
