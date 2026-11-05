@@ -495,6 +495,18 @@ if (DEPO_HEDEF && DEPO_KAYNAK && DEPO_HEDEF.tam !== DEPO_KAYNAK.tam) {
 // ---------------------------------------------------------------------------
 const bulgular = [];
 // Sözcük sınırıyla eşleşir (Türkçe harfler dahil): "Ada" adı "Adana"yı işaretlemez
+// Windows betikleri CRLF olmalı: LF satır sonlu .bat dosyalarını cmd.exe hatalı okuyabilir (pencere açılıp kapanır)
+(function windowsSatirSonlari(kok) {
+  for (const ad of fs.readdirSync(kok)) {
+    const yol = path.join(kok, ad);
+    const st = fs.statSync(yol);
+    if (st.isDirectory()) { if (!/^(node_modules|\.git)$/.test(ad)) windowsSatirSonlari(yol); continue; }
+    if (!/\.(bat|cmd|ps1)$/i.test(ad)) continue;
+    const b = fs.readFileSync(yol);
+    const crlf = Buffer.from(b.toString("latin1").replace(/\r\n/g, "\n").replace(/\n/g, "\r\n"), "latin1");
+    if (!crlf.equals(b)) { fs.writeFileSync(yol, crlf); donusumRaporu.push({ d: { ad: `Windows satır sonu (CRLF): ${path.relative(HEDEF, yol)}` }, sonuc: "uygulandı" }); }
+  }
+})(HEDEF);
 const isimKalibi = new RegExp(`(?<![\\p{L}\\p{N}_])(${(isimler.length ? isimler : ["\\u0000yok"]).map(kacis).join("|")})(?![\\p{L}\\p{N}_])`, "giu");
 
 function satirNo(metin, indeks) { return metin.slice(0, indeks).split("\n").length; }
