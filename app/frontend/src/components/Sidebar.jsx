@@ -1,5 +1,5 @@
-import React, { memo } from "react";
-import { Image, FolderDown, MessageSquare, Mic, Settings, Terminal, ChevronDown, ChevronUp, Trash2, Volume2, Music, Clapperboard, Plus } from "lucide-react";
+import React, { memo, useState } from "react";
+import { Image, FolderDown, MessageSquare, Mic, Settings, Terminal, ChevronDown, ChevronUp, Trash2, Volume2, Music, Clapperboard, Plus, Pencil, Check, X } from "lucide-react";
 
 function formatSidebarDate(value) {
   const date = new Date(value);
@@ -20,6 +20,7 @@ function Sidebar({
   showHistory,
   setShowHistory,
   onDeleteConversation,
+  onRenameConversation,
   speechTranscriptions = [],
   selectedSpeechTranscript,
   setSelectedSpeechTranscript,
@@ -33,6 +34,7 @@ function Sidebar({
   setShowTtsHistory,
   onDeleteTtsOutput
 }) {
+  const [duzenlenen, setDuzenlenen] = useState(null); // { id, title }: sohbet geçmişinde yeniden adlandırma
   return (
     <div className={`sidebar ${collapsed ? "collapsed" : ""}`}>
       <div>
@@ -133,6 +135,19 @@ function Sidebar({
                 ) : (
                   conversations.map((conv) => {
                     const isActive = activeConversationId === conv.id;
+                    if (duzenlenen && duzenlenen.id === conv.id) {
+                      const kaydet = () => { const t = duzenlenen.title.trim(); if (t && t !== conv.title) onRenameConversation?.(conv.id, t); setDuzenlenen(null); };
+                      return (
+                        <div key={conv.id} style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 6px" }} onClick={(e) => e.stopPropagation()}>
+                          <input autoFocus value={duzenlenen.title} maxLength={80} aria-label="Sohbetin yeni adı"
+                            onChange={(e) => setDuzenlenen({ ...duzenlenen, title: e.target.value })}
+                            onKeyDown={(e) => { if (e.key === "Enter") kaydet(); if (e.key === "Escape") setDuzenlenen(null); }}
+                            style={{ flex: 1, minWidth: 0, fontSize: "0.78rem", padding: "4px 6px", borderRadius: 6, border: "1px solid var(--md-sys-color-primary)", background: "var(--md-sys-color-surface)", color: "var(--md-sys-color-on-surface)" }} />
+                          <button type="button" title="Kaydet" onClick={kaydet} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--md-sys-color-primary)", padding: 2, display: "flex" }}><Check size={13} /></button>
+                          <button type="button" title="Vazgeç" onClick={() => setDuzenlenen(null)} style={{ background: "none", border: "none", cursor: "pointer", color: "var(--md-sys-color-outline)", padding: 2, display: "flex" }}><X size={13} /></button>
+                        </div>
+                      );
+                    }
                     return (
                       <div
                         key={conv.id}
@@ -165,6 +180,14 @@ function Sidebar({
                         }}>
                           {conv.title}
                         </span>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setDuzenlenen({ id: conv.id, title: conv.title || "" }); }}
+                          style={{ background: "none", border: "none", color: "var(--md-sys-color-outline)", cursor: "pointer", padding: "2px", marginLeft: "6px", display: "flex", alignItems: "center" }}
+                          className="sidebar-history-delete"
+                          title="Sohbeti yeniden adlandır"
+                        >
+                          <Pencil size={12} />
+                        </button>
                         <button
                           onClick={(e) => {
                             e.stopPropagation();

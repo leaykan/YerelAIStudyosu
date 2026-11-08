@@ -268,15 +268,19 @@ function ciktiErisimi(req, klasor, dosya) {
   return KULLANICI.gorebilirMi(req, meta && meta.sahip, !meta);
 }
 const BULUT = require("./bulut.cjs")({ ROOT, json, readJsonBody, motorGunlugu, log: (...a) => console.log(...a) });
+// Ana direktifler: her sohbette sistem mesajının başına eklenen, yalnızca yöneticinin gördüğü temel kurallar
+const ANA_DIREKTIFLER = require("./ana-direktifler.cjs")({ ROOT, json, readJsonBody, kullanici: { kurulumVar: () => KULLANICI.kurulumVar(), oturumKullanicisi: (r) => KULLANICI.oturumKullanicisi(r) } });
+// Yerel modelden tek seferlik kısa yanıt (hafıza notları, sohbet başlığı)
+async function KULLANICI_LLM_TEK_YANIT(messages, maxTokens = 600) {
+  const r = await requestJson(`http://127.0.0.1:${PORT_LLM}/v1/chat/completions`, { model: llmSettings.model || "local-model", messages, temperature: 0.2, max_tokens: maxTokens, stream: false, cache_prompt: false }, 600000);
+  return r && r.choices && r.choices[0] && r.choices[0].message ? r.choices[0].message.content : "";
+}
 // Kullanıcı girişi ve kişisel hafıza (isteğe bağlı; kullanıcı yoksa uygulama girişsiz çalışır)
 const KULLANICI = require("./kullanici.cjs")({
   ROOT, json, readJsonBody, motorGunlugu, ESKI_SOHBETLER: CHAT_HISTORY,
   llmHazirMi: () => Boolean(llmReady),
   modelMesgulMu: () => aktifSohbetAkisi > 0 || (() => { try { const d = STUDYO.durum(); return Boolean(d.aktif); } catch (_) { return false; } })(),
-  llmTekYanit: async (messages, maxTokens = 600) => {
-    const r = await requestJson(`http://127.0.0.1:${PORT_LLM}/v1/chat/completions`, { model: llmSettings.model || "local-model", messages, temperature: 0.2, max_tokens: maxTokens, stream: false, cache_prompt: false }, 600000);
-    return r && r.choices && r.choices[0] && r.choices[0].message ? r.choices[0].message.content : "";
-  },
+  llmTekYanit: (messages, maxTokens = 600) => KULLANICI_LLM_TEK_YANIT(messages, maxTokens),
   // Isınma: sistem istemi önceden işlenir (llama.cpp istem önbelleği); model meşgulse atlanır
   llmIsit: async (sistem) => {
     if (!llmReady || !llmProc || aktifSohbetAkisi > 0) return;
@@ -376,7 +380,36 @@ const MODEL_ARAMA = require("./model-arama.cjs")({
   indirmeDurumu: () => downloadState, klasorler: MODEL_KLASORLERI, OZ, STUDYO, hfAnahtari: () => OZ.hfAnahtari(),
   log: (...a) => console.log(...a),
 });
-const MODEL_GUNCELLEME = require("./guncelleme.cjs")({ arama: MODEL_ARAMA.ortak, klasorler: MODEL_KLASORLERI });
+const MODEL_GUNCELLEME = require("./guncelleme.cjs")({ arama: MODEL_ARAMA.ortak, klasorler: MODEL_KLASORLERI, motorGunlugu: (s) => motorGunlugu(s),
+  // Kurulum/indirme sürerken (ör. ilk kurulum sihirbazı) güncelleme penceresi kendiliğinden açılmaz
+  mesgulMu: () => Boolean(downloadState.active || defaultModelsQueue || OZ.kurulumDurumu().aktif || OZ.paketDurumu().aktif) });
+// Ağ kalkanı (Windows Güvenlik Duvarı kuralları) ve ağ gözcüsü: motorlar internete çıkamaz; deneyen durdurulur ve bildirilir
+const AG_KALKANI = require("./ag-kalkani.cjs")({
+  ROOT, json, readJsonBody, motorGunlugu: (s) => motorGunlugu(s),
+  // Kurulum/indirme sürerken kurulum araçlarının (python-kurulum.exe, powershell) internete çıkmasına izin verilir
+  kurulumSuruyor: () => Boolean(downloadState.active || defaultModelsQueue || OZ.kurulumDurumu().aktif || OZ.paketDurumu().aktif
+    || (typeof ILK_KURULUM.kuyrukAktif === "function" && ILK_KURULUM.kuyrukAktif())
+    || (MODEL_ARAMA.ortak && typeof MODEL_ARAMA.ortak.aktifIs === "function" && MODEL_ARAMA.ortak.aktifIs())
+    || (() => { try { const d = STUDYO.durum(); return Boolean(d.kurulum && d.kurulum.aktif); } catch (_) { return false; } })()),
+});
+// Uygulama güncellemesi (Ayarlar): GitHub son sürümü → doğrulanmış Kurulum.bat soru sormadan bu klasörü günceller
+const UYGULAMA_GUNCELLEME = require("./uygulama-guncelleme.cjs")({
+  ROOT, json, readJsonBody, motorGunlugu: (s) => motorGunlugu(s),
+  kapatVeCalistir: async (calistir) => {
+    motorGunlugu("[sunucu] uygulama güncellemesi için kapanıyor");
+    try { await killBackend(); } catch (_) {}
+    try { await killOpenVinoWorker(); } catch (_) {}
+    try { await killLlm(); } catch (_) {}
+    try { await stopSpeech(); } catch (_) {}
+    try { await stopTts(); } catch (_) {}
+    try { emaKapat(); } catch (_) {}
+    try { OZ.hepsiniKapat(); } catch (_) {}
+    try { STUDYO.hepsiniDurdur(); } catch (_) {}
+    await new Promise((r) => { try { server.close(() => r()); } catch (_) { r(); } setTimeout(r, 3000); });
+    try { calistir(); } catch (err) { motorGunlugu("[sunucu] güncelleme başlatılamadı: " + err.message); }
+    setTimeout(() => process.exit(0), 800);
+  },
+});
 const PIPER_VOICE_PREFIX = "piper:";
 let piperCache = { at: 0, exe: "", espeak: "", voices: [] };
 
@@ -493,6 +526,7 @@ function emaBaslat() {
       ...process.env,
       HF_HOME: path.join(EMA_KLASOR, "hf"),
       HF_HUB_DISABLE_TELEMETRY: "1",
+      HF_HUB_OFFLINE: "1", // model kurulumda indi; çalışırken ağa çıkılmaz (ağ kalkanı)
       PYTHONIOENCODING: "utf-8",
       PYTHONUTF8: "1",
     };
@@ -5550,7 +5584,9 @@ function startOpenVinoModelDownload(modelId) {
     "print('DONE')",
   ].join("\n");
   console.log(`  [openvino-download] Downloading ${model.repo} -> ${destDir}`);
-  const proc = spawn(npuInfo.python, ["-c", script], { stdio: "pipe" });
+  // İndirme ağ gerektirir: ağ kalkanının izin verdiği kurulum kopyasıyla (Windows'ta python-kurulum.exe)
+  const indirmePython = osPlatform === "win32" && path.resolve(npuInfo.python) === path.resolve(OZ.PYTHON) ? OZ.kurulumPython() : npuInfo.python;
+  const proc = spawn(indirmePython, ["-c", script], { stdio: "pipe" });
   activeDownload = { process: proc, destPath: destDir, openvino: true };
   proc.stdout.on("data", (data) => process.stdout.write("  [openvino-download] " + data.toString()));
   proc.stderr.on("data", (data) => process.stderr.write("  [openvino-download] " + data.toString()));
@@ -6577,12 +6613,48 @@ function sanitizeChatConversationForStorage(conversation = {}) {
   return {
     id,
     title: String(conversation.title || "Chat Session").slice(0, 160),
+    // Başlık kaynağı: "elle" (kullanıcı değiştirdi) ya da "model" (yerel model konuya göre adlandırdı); yoksa ilk mesajdan
+    ...(["elle", "model"].includes(conversation.baslikKaynagi) ? { baslikKaynagi: conversation.baslikKaynagi } : {}),
     model: String(conversation.model || ""),
     messages,
     timestamp,
     createdAt: conversation.createdAt || new Date(timestamp).toISOString(),
     updatedAt: new Date().toISOString(),
   };
+}
+
+// Sohbet başlığını yerel model konuya göre verir (ilk yanıttan sonra, model boştayken; elle verilmiş başlığa dokunmaz)
+const baslikZamanlayicilari = new Map();
+function sohbetBasligiPlanla(sohbet, klasor) {
+  if (!sohbet || !sohbet.id || ["elle", "model"].includes(sohbet.baslikKaynagi)) return;
+  const mesajlar = (sohbet.messages || []).filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim());
+  if (!mesajlar.some((m) => m.role === "user") || !mesajlar.some((m) => m.role === "assistant")) return;
+  const anahtar = `${klasor}|${sohbet.id}`;
+  clearTimeout(baslikZamanlayicilari.get(anahtar));
+  const dene = async (tekrar = 0) => {
+    baslikZamanlayicilari.delete(anahtar);
+    if (!llmReady || !llmProc) return;
+    if (aktifSohbetAkisi > 0) { if (tekrar < 6) baslikZamanlayicilari.set(anahtar, setTimeout(() => dene(tekrar + 1), 20000)); return; }
+    try {
+      const yol = getChatConversationPath(sohbet.id, klasor);
+      const guncel = JSON.parse(KULLANICI.dosyaOku(yol));
+      if (["elle", "model"].includes(guncel.baslikKaynagi)) return;
+      const ozet = (guncel.messages || []).filter((m) => (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
+        .slice(0, 6).map((m) => `${m.role === "user" ? "Kullanıcı" : "Asistan"}: ${m.content.replace(/\s+/g, " ").slice(0, 400)}`).join("\n");
+      const yanit = await KULLANICI_LLM_TEK_YANIT([
+        { role: "system", content: "Bir sohbete kısa başlık veren yardımcısın. Sohbetin genel konusunu en fazla 5 kelimelik Türkçe bir başlıkla yaz. Yalnızca başlığı yaz; tırnak, emoji, açıklama ve sonda noktalama kullanma." },
+        { role: "user", content: ozet },
+      ], 24);
+      const baslik = String(yanit || "").split(/\r?\n/)[0].replace(/^["'“”«»\s]+|["'“”«»\s.!?:;]+$/g, "").replace(/^(başlık|baslik)\s*:\s*/i, "").slice(0, 60).trim();
+      if (baslik.length < 2) return;
+      const son = JSON.parse(KULLANICI.dosyaOku(yol));
+      if (["elle", "model"].includes(son.baslikKaynagi)) return;
+      son.title = baslik;
+      son.baslikKaynagi = "model";
+      KULLANICI.dosyaYaz(yol, JSON.stringify(son, null, 2));
+    } catch (_) {}
+  };
+  baslikZamanlayicilari.set(anahtar, setTimeout(() => dene(0), 4000));
 }
 
 function getChatConversationPath(id, klasor = CHAT_HISTORY) {
@@ -6598,6 +6670,16 @@ function getChatConversationPath(id, klasor = CHAT_HISTORY) {
 function saveChatConversation(conversation = {}, klasor = CHAT_HISTORY) {
   const saved = sanitizeChatConversationForStorage(conversation);
   const filePath = getChatConversationPath(saved.id, klasor);
+  // Elle ya da model tarafından verilmiş başlık, arayüzün sonraki kayıtlarında ilk mesajdan üretilen başlıkla ezilmez
+  try {
+    if (fs.existsSync(filePath)) {
+      const eski = JSON.parse(KULLANICI.dosyaOku(filePath));
+      if (eski && ["elle", "model"].includes(eski.baslikKaynagi) && !["elle", "model"].includes(conversation.baslikKaynagi)) {
+        saved.title = eski.title;
+        saved.baslikKaynagi = eski.baslikKaynagi;
+      }
+    }
+  } catch (_) {}
   KULLANICI.dosyaYaz(filePath, JSON.stringify(saved, null, 2)); // kullanıcı klasöründe şifreli
   return saved;
 }
@@ -8643,6 +8725,9 @@ const YONETICI_ISLEMLERI = [
   /^\/api\/(ozellikler\/kur|paketler\/indir|model-arama\/kur)$/,
   /^\/api\/studyo\/(kur|sil|klasor-ac)$/,
   /^\/api\/guncelleme\//,
+  /^\/api\/uygulama\/guncelle$/,
+  /^\/api\/ag-kalkani\/(kur|kapat|ac)$/,
+  /^\/api\/ana-direktifler(\/sifirla)?$/,
   /^\/api\/ilk-kurulum\/(indir|iptal|tamam)$/,
 ];
 // Her istek, o anki kullanıcının bağlamında işlenir (ses klonu sahipliği, şifreli dosyalar)
@@ -8680,7 +8765,8 @@ async function anaIstekIsleyici(req, res) {
   {
     const yol = req.url.split("?")[0];
     const acik = yol.startsWith("/api/kullanici/") || (req.method === "GET" && ["/api/telemetry", "/api/hardware-specs", "/api/llm/status", "/api/status"].includes(yol));
-    if (yol.startsWith("/api/") && !acik && KULLANICI.kurulumVar()) {
+    // /v1 ve /sdapi: görsel motoruna doğrudan vekil uçlar; kullanıcı varsa bunlar da oturum ister
+    if ((yol.startsWith("/api/") || yol.startsWith("/v1/") || yol.startsWith("/sdapi/")) && !acik && KULLANICI.kurulumVar()) {
       const oturum = KULLANICI.oturumKullanicisi(req);
       if (!oturum) return json(res, 401, { ok: false, girisGerekli: true, error: "Giriş yapmanız gerekiyor." });
       // Sistemi etkileyen işlemler (bulut anahtarları, model indirme/silme/içe aktarma, temizlik, paket/özellik kurulumu,
@@ -8694,6 +8780,9 @@ async function anaIstekIsleyici(req, res) {
   // Müzik / Ses Efekti ve Video stüdyosu uç noktaları (/api/music, /api/video, /api/studyo, /studyo-cikti, /api/audio/music|progress|history|delete)
   if (await STUDYO.handle(req, res)) return;
   if (await KULLANICI.handle(req, res)) return;
+  if (await UYGULAMA_GUNCELLEME.handle(req, res)) return;
+  if (await AG_KALKANI.handle(req, res)) return;
+  if (await ANA_DIREKTIFLER.handle(req, res)) return;
 
   if ((req.url.startsWith("/v1/") || req.url.startsWith("/sdapi/")) && ["GET", "POST"].includes(req.method)) {
     return proxyImageBackendRequest(req, res);
@@ -8814,7 +8903,7 @@ async function anaIstekIsleyici(req, res) {
     return json(res, 200, { ok: true, model: filename, settings: updated });
   }
 
-  if (req.url === "/api/llm/conversations" || req.url === "/api/llm/save-conversation" || req.url === "/api/llm/delete-conversation") {
+  if (req.url === "/api/llm/conversations" || req.url === "/api/llm/save-conversation" || req.url === "/api/llm/delete-conversation" || req.url === "/api/llm/rename-conversation") {
     req.sohbetKlasoru = KULLANICI.sohbetKlasoru(req);
     if (!req.sohbetKlasoru) return json(res, 401, { ok: false, error: "Sohbet geçmişi için giriş yapın.", girisGerekli: true });
   }
@@ -8828,9 +8917,29 @@ async function anaIstekIsleyici(req, res) {
     try {
       const conversation = saveChatConversation(body.conversation || body, req.sohbetKlasoru);
       try { KULLANICI.sohbetKaydedildi(req, conversation); } catch (_) {}
+      try { sohbetBasligiPlanla(conversation, req.sohbetKlasoru); } catch (_) {}
       return json(res, 200, { ok: true, conversation });
     } catch (err) {
       console.error("  [api] Sohbet kaydi kaydedilemedi:", err);
+      return json(res, 500, { ok: false, error: err.message || String(err) });
+    }
+  }
+
+  // POST /api/llm/rename-conversation { id, title } — sohbeti elle yeniden adlandır
+  if (req.url === "/api/llm/rename-conversation" && req.method === "POST") {
+    const body = await readJsonBody(req, res);
+    if (!body) return;
+    try {
+      const baslik = String(body.title || "").replace(/\s+/g, " ").trim().slice(0, 80);
+      if (!baslik) return json(res, 400, { ok: false, error: "Başlık boş olamaz." });
+      const yol = getChatConversationPath(body.id, req.sohbetKlasoru);
+      if (!fs.existsSync(yol)) return json(res, 404, { ok: false, error: "Sohbet bulunamadı." });
+      const c = JSON.parse(KULLANICI.dosyaOku(yol));
+      c.title = baslik;
+      c.baslikKaynagi = "elle";
+      KULLANICI.dosyaYaz(yol, JSON.stringify(c, null, 2));
+      return json(res, 200, { ok: true, id: c.id, title: c.title, baslikKaynagi: c.baslikKaynagi });
+    } catch (err) {
       return json(res, 500, { ok: false, error: err.message || String(err) });
     }
   }
@@ -9446,6 +9555,8 @@ async function augmentMessagesWithWebSearch(messages, body) {
 // Araç gerekmiyorsa ilk birkaç karakterden anlaşılır ve yanıt hiç beklemeden akar.
 // ============================================================================
 const ARAC_ETIKETI = /<arac\s+([^>]*?)>([\s\S]*?)<\/arac>/i;
+// "Hemen bakıyorum:", "İnternette arıyorum…" gibi, aramayı başlatacağını söyleyip biten yanıtlar
+const WEB_NIYETI = /(bak[ıi]yorum|bakay[ıi]m|ar[ıi]yorum|arayay[ıi]m|ara[şs]t[ıi]r[ıi]yorum|ara[şs]t[ıi]ray[ıi]m|kontrol ediyorum|kontrol edeyim|sorguluyorum|tar[ıi]yorum)[\s.:…!]*$/iu;
 
 // <arac ad="web_ara" tur="haber" zaman="gun" dil="tr">sorgu</arac> -> { ad, oz: {tur, zaman, dil}, girdi }
 function aracEtiketiniCoz(esles) {
@@ -9630,12 +9741,56 @@ function llmAkisTuru(messages, body, res) {
       let karar = "bekliyor"; // bekliyor | akis | arac
       let metin = "";
       let tampon = "";
+      let akisTampon = "";
+      let akisMetni = ""; // akışta kullanıcıya giden metin (araç etiketi metnin ortasında gelirse yakalamak için)
+      const bekletilenOlaylar = []; // etiketin başı olabilecek olaylar
+      let bekletilenMetin = "";
       const bekleyenParcalar = [];
       let bitti = false;
       const bitir = (sonuc) => { if (!bitti) { bitti = true; resolve(sonuc); } };
       yanit.setEncoding("utf8");
       yanit.on("data", (parca) => {
-        if (karar === "akis") { res.write(parca); return; }
+        if (karar === "akis") {
+          // Küçük modeller önce bir cümle yazıp ARDINDAN araç etiketi verebiliyor ("Hemen bakıyorum: <arac ...>").
+          // Akış olay olay iletilir; etiket görülünce akış durur ve araç yolu devreye girer (etiket kullanıcıya gitmez).
+          akisTampon += parca;
+          const olaylarA = akisTampon.split(/\r?\n\r?\n/);
+          akisTampon = olaylarA.pop() || "";
+          for (const olay of olaylarA) {
+            if (karar !== "akis") { // etiket bulundu: kalan olayların metni etikete eklenir
+              const v = olay.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("");
+              if (v && v !== "[DONE]") { try { metin += JSON.parse(v)?.choices?.[0]?.delta?.content || ""; } catch (_) {} }
+              continue;
+            }
+            const v = olay.split(/\r?\n/).filter((l) => l.startsWith("data:")).map((l) => l.slice(5).trim()).join("");
+            let ic = "";
+            if (v && v !== "[DONE]") { try { ic = JSON.parse(v)?.choices?.[0]?.delta?.content || ""; } catch (_) {} }
+            const birlesik = akisMetni + bekletilenMetin + ic;
+            const i = birlesik.toLowerCase().indexOf("<arac");
+            if (i >= 0) {
+              karar = "arac";
+              const once = birlesik.slice(akisMetni.length, i); // etiketten önceki kısım kullanıcıya gitsin
+              if (once) sseYaz(res, "message", { choices: [{ delta: { content: once } }] });
+              metin = birlesik.slice(i);
+              bekletilenOlaylar.length = 0; bekletilenMetin = "";
+              continue;
+            }
+            // Metin "<", "<a", "<ar", "<ara" ile bitiyorsa etiketin başı olabilir: olay bir sonrakine kadar bekletilir
+            const kuyruk = birlesik.slice(-4).toLowerCase();
+            if (["<", "<a", "<ar", "<ara"].some((k) => kuyruk.endsWith(k))) { bekletilenOlaylar.push(olay); bekletilenMetin += ic; continue; }
+            for (const b of bekletilenOlaylar) res.write(b + "\n\n");
+            bekletilenOlaylar.length = 0; bekletilenMetin = "";
+            akisMetni = birlesik;
+            res.write(olay + "\n\n");
+          }
+          if (karar === "arac") {
+            tampon = akisTampon; // yarım kalan olay araç yolunda okunmaya devam etsin
+            akisTampon = "";
+            const esles = metin.match(ARAC_ETIKETI);
+            if (esles) { yanit.destroy(); istek.destroy(); const arac = aracEtiketiniCoz(esles); bitir(arac ? { arac, onMetin: akisMetni } : { arac: null, hamMetin: metin }); }
+          }
+          return;
+        }
         bekleyenParcalar.push(parca);
         tampon += parca;
         const olaylar = tampon.split(/\r?\n\r?\n/);
@@ -9652,7 +9807,12 @@ function llmAkisTuru(messages, body, res) {
           if (bas.toLowerCase().startsWith("<arac")) karar = "arac";
           else {
             karar = "akis";
-            for (const p of bekleyenParcalar) res.write(p);
+            akisMetni = metin;
+            // Yalnızca tamamlanmış olaylar yazılır; yarım olay akış yolunda tamamlanıp okunur
+            const hepsi = bekleyenParcalar.join("");
+            res.write(hepsi.slice(0, hepsi.length - tampon.length));
+            akisTampon = tampon;
+            tampon = "";
             bekleyenParcalar.length = 0;
             return;
           }
@@ -9670,13 +9830,14 @@ function llmAkisTuru(messages, body, res) {
       });
       yanit.on("end", () => {
         if (karar === "bekliyor") { for (const p of bekleyenParcalar) res.write(p); }
+        if (karar === "akis") { for (const b of bekletilenOlaylar) res.write(b + "\n\n"); akisMetni += bekletilenMetin; if (akisTampon) res.write(akisTampon); }
         if (karar === "arac") {
           const bas = metin.replace(/^[\s`]+/, "");
           const esles = bas.match(ARAC_ETIKETI) || (bas + "</arac>").match(ARAC_ETIKETI);
           const arac = esles ? aracEtiketiniCoz(esles) : null;
-          if (arac) return bitir({ arac });
+          if (arac) return bitir({ arac, onMetin: akisMetni });
         }
-        bitir({ arac: null });
+        bitir({ arac: null, akisMetni });
       });
       yanit.on("error", (err) => { if (!bitti) reject(err); });
     });
@@ -9706,6 +9867,15 @@ async function aracliSohbet(req, res, body) {
     for (let tur = 0; tur <= AZAMI_ARAC_TURU; tur += 1) {
       if (res.destroyed || res.writableEnded) return;
       const sonuc = await llmAkisTuru(mesajlar, body, res);
+      // Web açıkken model "bakıyorum / arıyorum" deyip aracı çağırmadan bitirdiyse aramayı sunucu başlatır
+      if (!sonuc.arac && !sonuc.hamMetin && webAcik && tur === 0 && WEB_NIYETI.test(String(sonuc.akisMetni || "").trim())) {
+        const sonK = [...mesajlar].reverse().find((m) => m.role === "user" && typeof m.content === "string");
+        const sorgu = sonK ? sonK.content.replace(/\s+/g, " ").trim().slice(0, 300) : "";
+        if (sorgu) {
+          motorGunlugu("[vega] model aramaya niyetlendi ama aracı çağırmadı; arama sunucu tarafından başlatıldı");
+          sonuc.arac = { ad: "web_ara", girdi: sorgu, ham: String(sonuc.akisMetni || ""), oz: {} };
+        }
+      }
       if (!sonuc.arac) {
         if (sonuc.hamMetin) {
           // Etiket bozuk geldiyse metni olduğu gibi göster
@@ -10098,6 +10268,7 @@ async function getLlmfitRecommendations(useCase = "chat", limit = 10) {
       return json(res, 409, { ok: false, error: neden });
     }
     sohbetAkisiBasla(res); // akışsız istekler de sayılır: video için model, süren istek bitmeden kapatılmaz
+    try { body.messages = ANA_DIREKTIFLER.mesajlaraEkle(body.messages); } catch (_) {}
     try { body.messages = KULLANICI.mesajlaraHafizaEkle(req, body.messages, Boolean(bulutAktif())); } catch (_) {}
     // Isınma için son sistem istemini (araç talimatı dahil) sakla
     try {

@@ -63,8 +63,13 @@ function Bilgi { param([string]$m) Write-Host "   >>  $m" -ForegroundColor Cyan 
 function Uyari { param([string]$m) Write-Host "   !!  $m" -ForegroundColor Yellow }
 function Hata  { param([string]$m) Write-Host "   XX  $m" -ForegroundColor Red }
 
+# Uygulama içinden güncelleme (Ayarlar > Uygulama güncellemesi) bu dosyayı soru sormayan kipte çalıştırır:
+#   YAS_GUNCELLE_HEDEF = güncellenecek kurulum klasörü, YAS_SESSIZ = 1 (her soruya varsayılan yanıt),
+#   YAS_BEKLE_PID = dosyalar değişmeden önce kapanması beklenen uygulama süreci
+$Sessiz = ($env:YAS_SESSIZ -eq '1')
 function Sor {
     param([string]$Soru, [string]$Varsayilan = '')
+    if ($Sessiz) { Write-Host "  $Soru [$Varsayilan] (otomatik)"; return $Varsayilan }
     $ek = ''
     if ($Varsayilan -ne '') { $ek = " [$Varsayilan]" }
     $c = Read-Host "  $Soru$ek"
@@ -284,6 +289,25 @@ try {
     $zipYolu = Join-Path $tmpKok 'paket.zip'
     $zipAdi = ''
 
+    # --- 0) Sorumluluk ve güvenlik bilgisi -------------------------------------------
+    Yaz ''
+    Yaz '  ============================================================' Yellow
+    Yaz '    ÖNEMLİ: Üçüncü taraf modeller ve sorumluluk' Yellow
+    Yaz '  ============================================================' Yellow
+    Yaz '  Bu uygulama ek yetenekler (sohbet, ses, görsel, müzik, video) için açık kaynaklı,'
+    Yaz '  üçüncü taraflarca geliştirilmiş yapay zekâ modelleri ve yazılım paketleri kullanır.'
+    Yaz '  Bu modeller ve paketler uygulamanın geliştiricileri tarafından denetlenemez.'
+    Yaz '  Olası riskler nedeniyle model ve paket yükleme ile model seçimlerinde sorumluluk'
+    Yaz '  kullanıcıya aittir.'
+    Yaz ''
+    Yaz '  Riskleri azaltmak için uygulama iki koruma kullanır:' White
+    Yaz '   - Ağ kalkanı: modelleri çalıştıran motorların internete çıkışını Windows Güvenlik'
+    Yaz '     Duvarı ile kapatır (bir kez yönetici izni ister; sonra yeni motorları kendiliğinden korur).'
+    Yaz '   - Ağ gözcüsü: internete bağlanmaya çalışan motoru durdurur ve sizi uyarır.'
+    Yaz '  Bu korumalar riski azaltır ama tamamen ortadan kaldırmaz.'
+    Yaz ''
+    if (-not (EvetMi 'Okudum, kabul ediyorum. Devam edilsin mi?' $true)) { throw 'Kurulum iptal edildi.' }
+
     # --- 1) Paket: yerel mi, GitHub mı? ----------------------------------------
     $yerelPaket = $null
     $argPaket = [string]$env:YAS_YEREL_PAKET
@@ -377,6 +401,15 @@ try {
         $aday = Join-Path $env:LOCALAPPDATA $VarsayilanKlasorAdi
         if (Test-Path -LiteralPath (Join-Path $aday 'windows.bat')) { $eskiKonum = $aday }
     }
+    $usb = $false
+    $klasorAdi = $VarsayilanKlasorAdi
+    if ($env:YAS_GUNCELLE_HEDEF) {
+        # Uygulama içinden güncelleme: hedef sorulmaz, yalnızca var olan bir kurulum güncellenir
+        $hedef = [IO.Path]::GetFullPath($env:YAS_GUNCELLE_HEDEF.Trim('"'))
+        if (-not (Test-Path -LiteralPath (Join-Path $hedef 'windows.bat'))) { throw "Güncellenecek kurulum bulunamadı: $hedef" }
+        $klasorAdi = Split-Path -Leaf $hedef
+        Bilgi "Güncellenecek kurulum: $hedef"
+    } else {
     Yaz ''
     Yaz '  Nereye kurulsun?' White
     Yaz "    [1] Bu bilgisayara, kullanıcı klasörünüze (önerilen):  $profil\<klasör adı>"
@@ -472,6 +505,8 @@ try {
         Bilgi 'USB 3 bellek ya da harici SSD önerilir; yavaş bellekte modellerin açılması uzun sürer.'
     }
 
+    }
+
     # --- 3) Alan ve klasör denetimi ---------------------------------------------
     $surucuBilgi = BosAlan $hedef
     if ($surucuBilgi) {
@@ -517,6 +552,13 @@ try {
     Yaz ''
     Bilgi "Kurulum yeri: $hedef"
 
+    # Uygulama içinden güncellemede: uygulamanın tamamen kapanması beklenir
+    if ($env:YAS_BEKLE_PID) {
+        Bilgi 'Uygulamanın kapanması bekleniyor...'
+        try { Wait-Process -Id ([int]$env:YAS_BEKLE_PID) -Timeout 120 -ErrorAction SilentlyContinue } catch {}
+        Start-Sleep -Seconds 2
+    }
+
     # --- 4) Aç ve yerleştir -----------------------------------------------
     Bilgi 'Paket açılıyor...'
     Add-Type -AssemblyName System.IO.Compression.FileSystem
@@ -554,9 +596,43 @@ try {
     Remove-Item -LiteralPath $tmpKok -Recurse -Force -ErrorAction SilentlyContinue
     Tamam 'Dosyalar hazır.'
 
+    # --- 4b) Ağ kalkanı (Windows Güvenlik Duvarı; bir kez yönetici izni) ------------
+    $kalkanBetigi = Join-Path $hedef 'scripts\setup\ag-kalkani.ps1'
+    if (Test-Path -LiteralPath $kalkanBetigi) {
+        $kalkanVar = $false
+        try {
+            $sha = [Security.Cryptography.SHA256]::Create()
+            $baytlar = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(([IO.Path]::GetFullPath($hedef).TrimEnd('\')).ToLowerInvariant()))
+            $kimlik = (($baytlar | ForEach-Object { $_.ToString('x2') }) -join '').Substring(0, 8)
+            $kalkanVar = [bool](Get-ScheduledTask -TaskName "YerelAIStudyosu Ag Kalkani $kimlik" -ErrorAction SilentlyContinue)
+        } catch {}
+        if ($kalkanVar) {
+            Tamam 'Ağ kalkanı zaten etkin (yeni motorlar kendiliğinden korunur).'
+        } elseif ($Sessiz) {
+            Bilgi 'Ağ kalkanı kurulu değil; uygulama açılınca Ayarlar ve üst bilgi çubuğu kurulumu önerecek.'
+        } else {
+            Yaz ''
+            Yaz '  Ağ kalkanı kuruluyor: Windows yönetici izni (UAC) penceresinde "Evet" deyin.' White
+            Yaz '  (Motorların internete çıkışı kapatılır; web araması, model indirme ve güncelleme etkilenmez.)'
+            $kalkanSonuc = Join-Path ([IO.Path]::GetTempPath()) ('yas-kalkan-' + [Guid]::NewGuid().ToString('N').Substring(0, 8) + '.txt')
+            try {
+                Start-Process powershell -Verb RunAs -Wait -WindowStyle Hidden -ArgumentList '-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', "`"$kalkanBetigi`"", '-Islem', 'Kur', '-Kok', "`"$hedef`"", '-Sonuc', "`"$kalkanSonuc`""
+            } catch {}
+            $ks = ''
+            if (Test-Path -LiteralPath $kalkanSonuc) { $ks = ([IO.File]::ReadAllText($kalkanSonuc)).Trim(); Remove-Item -LiteralPath $kalkanSonuc -Force -ErrorAction SilentlyContinue }
+            if ($ks -like 'tamam*') { Tamam 'Ağ kalkanı kuruldu; yeni inen motorlar da kendiliğinden korunacak.' }
+            else {
+                Uyari 'Ağ kalkanı kurulamadı (izin verilmedi ya da hata). Ağ gözcüsü yine çalışır;'
+                Uyari 'kalkanı sonra Ayarlar > Ağ kalkanı bölümünden kurabilirsiniz.'
+            }
+        }
+    }
+
     # --- 5) Kısayol (yalnızca bu bilgisayara kurulumda) -------------------------
     $bat = Join-Path $hedef 'windows.bat'
-    if (-not $usb) {
+    if ($env:YAS_GUNCELLE_HEDEF) {
+        Bilgi 'Uygulama içinden güncelleme: kısayollara dokunulmadı.'
+    } elseif (-not $usb) {
         try {
             $masaustu = [Environment]::GetFolderPath('Desktop')
             $kisayolYolu = Join-Path $masaustu 'Yerel AI Stüdyosu.lnk'

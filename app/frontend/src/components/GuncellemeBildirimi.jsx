@@ -45,13 +45,35 @@ export default function GuncellemeBildirimi({ showAlert, showConfirm }) {
     ? showConfirm({ title, message, confirmLabel, cancelLabel: "Vazgeç", danger })
     : Promise.resolve(window.confirm(`${title}\n\n${message}`))), [showConfirm]);
 
+  // Kendiliğinden açılış: kurulum/indirme sürerken (ilk kurulum sihirbazı) ve yönetici olmayan kullanıcıda açılmaz
   const getir = useCallback(async () => {
     const r = await guncellemeleriGetir(false);
     if (!bagli.current) return r;
     setVeri(r);
-    if (!kapatildi.current && r.guncellemeler && r.guncellemeler.length > 0) setAcik(true);
+    if (!kapatildi.current && !r.mesgul && window.__yasYonetici !== false && r.guncellemeler && r.guncellemeler.length > 0) setAcik(true);
     return r;
   }, []);
+  const [elle, setElle] = useState(false); // Model Yöneticisi > "Güncellemeleri denetle" ile açıldı
+
+  // Elle açılış: güncelleme olmasa da pencere açılır ("her şey güncel"), denetim bitene kadar yenilenir
+  useEffect(() => {
+    const ac = async () => {
+      kapatildi.current = false;
+      setElle(true);
+      setAcik(true);
+      try {
+        let r = await guncellemeleriGetir(true);
+        if (bagli.current) setVeri(r);
+        for (let i = 0; i < 60 && r && r.denetleniyor && bagli.current; i += 1) {
+          await bekle(3000);
+          r = await guncellemeleriGetir(false);
+          if (bagli.current) setVeri(r);
+        }
+      } catch (err) { uyar("Güncellemeler denetlenemedi", err.message || String(err), true); }
+    };
+    window.addEventListener("yas-guncellemeleri-ac", ac);
+    return () => window.removeEventListener("yas-guncellemeleri-ac", ac);
+  }, [uyar]);
 
   // Açılış: sunucu denetimi bitene kadar seyrek yokla (en çok ~8 dk); hata/çevrimdışı ise sessizce vazgeç
   useEffect(() => {
@@ -60,6 +82,7 @@ export default function GuncellemeBildirimi({ showAlert, showConfirm }) {
       for (let i = 0; i < 22 && !iptal; i += 1) {
         try {
           const r = await getir();
+          if (r && r.mesgul) { i -= 1; await bekle(60000); continue; } // kurulum bitince yeniden bakılır
           const bugunDenetlendi = !r.denetleniyor && r.sonDenetim && Date.now() - r.sonDenetim < 25 * 60 * 60 * 1000;
           if (bugunDenetlendi || (r.guncellemeler && r.guncellemeler.length)) return;
         } catch (_) { return; }
@@ -138,15 +161,40 @@ export default function GuncellemeBildirimi({ showAlert, showConfirm }) {
       await surumuAtla(g.id, g.yeniSurum);
       setVeri((v) => {
         const yeni = { ...v, guncellemeler: v.guncellemeler.filter((x) => x.id !== g.id) };
-        if (!yeni.guncellemeler.length) setAcik(false);
+        if (!yeni.guncellemeler.length && !elle) setAcik(false);
         return yeni;
       });
     } catch (err) {
       uyar("Kaydedilemedi", err.message || String(err), true);
     }
-  }, [uyar]);
+  }, [uyar, elle]);
 
-  if (!acik || !veri || !veri.guncellemeler || !veri.guncellemeler.length) return null;
+  if (!acik || (!elle && (!veri || !veri.guncellemeler || !veri.guncellemeler.length))) return null;
+  if (elle && (!veri || !veri.guncellemeler || !veri.guncellemeler.length)) {
+    return (
+      <div className="app-dialog-backdrop" role="presentation">
+        <div className="app-dialog" role="dialog" aria-modal="true" style={st.pencere}>
+          <h3 className="app-dialog-title" style={{ display: "flex", alignItems: "center", gap: "8px", margin: 0 }}>
+            {!veri || veri.denetleniyor ? <><RefreshCw className="progress-spinner" size={18} /> Güncellemeler denetleniyor…</> : <><ShieldCheck size={18} /> Modeller ve paketler güncel</>}
+          </h3>
+          <p className="app-dialog-message" style={{ margin: 0 }}>
+            {!veri || veri.denetleniyor
+              ? "Kurulu modeller ve Python paketleri için yeni sürümler aranıyor. İnternet bağlantısına göre biraz sürebilir."
+              : `Kurulu modeller ve Python paketleri için yeni sürüm yok.${veri.sonDenetim ? ` Son denetim: ${new Date(veri.sonDenetim).toLocaleString("tr-TR")}.` : ""}`}
+          </p>
+          {veri && veri.sorulmayan > 0 && (
+            <div style={st.kucuk}>
+              {veri.sorulmayan} öğe için bildirim kapalı (“Bir daha sorma”).{" "}
+              <button type="button" onClick={sifirla} style={{ background: "none", border: 0, padding: 0, cursor: "pointer", ...st.bag }}>Yeniden sor</button>
+            </div>
+          )}
+          <div className="app-dialog-actions">
+            <button type="button" className="m3-btn m3-btn-filled" onClick={() => { setElle(false); setAcik(false); }}>Kapat</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
   const otomatikler = veri.guncellemeler.filter((g) => g.otomatik && !g.elleInceleme && g.cesit !== "pip");
   // "Tümünü güncelle": elle inceleme gerektirenler hariç hepsi. Python paketleri varsa tek bir ikinci onay sorulur.
   const pipler = veri.guncellemeler.filter((g) => g.cesit === "pip" && !g.elleInceleme);
@@ -253,7 +301,7 @@ export default function GuncellemeBildirimi({ showAlert, showConfirm }) {
         )}
 
         <div className="app-dialog-actions" style={{ flexWrap: "wrap" }}>
-          <button type="button" className="m3-btn m3-btn-outlined" disabled={Boolean(mesgul)} onClick={() => { kapatildi.current = true; setAcik(false); }}>Daha sonra</button>
+          <button type="button" className="m3-btn m3-btn-outlined" disabled={Boolean(mesgul)} onClick={() => { kapatildi.current = true; setElle(false); setAcik(false); }}>Daha sonra</button>
           <button type="button" className="m3-btn m3-btn-filled" disabled={Boolean(mesgul) || guncellenebilir.length === 0} onClick={tumunuGuncelle}
             title={guncellenebilir.length === 0 ? "Listedeki öğelerin hepsi elle inceleme gerektiriyor" : "Elle inceleme gerektirenler hariç hepsi; Python paketleri için bir kez ek onay sorulur"}>
             <ShieldCheck size={14} /> Tümünü güncelle{guncellenebilir.length ? ` (${guncellenebilir.length}${toplamBoyut ? " · " + boyutYaz(toplamBoyut) : ""})` : ""}

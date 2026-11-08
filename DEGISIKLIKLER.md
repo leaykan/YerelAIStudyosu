@@ -4,6 +4,36 @@ Bu belge, **Yerel AI Stüdyosu**'nun temel aldığı DD:YZ "Sansürsüz Lokal AI
 neleri değiştirdiğini özetler. Bu çatal leaykan ve Claude (Anthropic) tarafından geliştirildi (Eylül–Kasım 2026); asıl sahip ve ana geliştirici DD:YZ (Tech Jarves)'tir.
 Orijinal geliştirici bu değişiklikleri dilediği gibi kullanabilir.
 
+## 1.0.2
+
+- **Ağ kalkanı ve ağ gözcüsü (Windows):** modelleri çalıştıran motorlar internete çıkamaz (Windows Güvenlik Duvarı; kurulumda bir
+  kez yönetici izni, sonra yeni motorları kendiliğinden koruyan sistem görevi). Kalkanı yalnızca yönetici, üst çubuktaki göstergeden
+  ve her seferinde Windows yönetici izniyle kapatıp yeniden açabilir; durumu yeniden kurulum gerekmeden doğru gösterilir. Gözcü internete bağlanmaya
+  çalışan motoru durdurur ve arayüzde kırmızı bayrakla bildirir. Paket kurulumu ayrı bir Python kopyasıyla yapılır; EMA çalışırken
+  çevrimdışıdır. Kurulumda, ilk kurulum sihirbazında ve Model Yöneticisi'nde üçüncü taraf modeller için sorumluluk bilgisi gösterilir.
+
+- **Üst çubuk:** CPU göstergesinin yanında kalkan göstergesi — yeşil KALKAN (devrede) / kırmızı KALKAN KAPALI; engellenen bağlantı varsa
+  solunda kırmızı büyük harfli uyarı. Üst çubuktaki tema düğmeleri kaldırıldı.
+- **Web araması:** model "bakıyorum / arıyorum" deyip aramayı başlatmadan durursa sunucu aramayı kendisi başlatır; araç çağrısı yanıtın
+  ortasında gelse de yakalanır ve sohbete ham etiket sızmaz. Sonuçlar kırpılmadan modele verilir.
+- **Sohbet adları:** sohbet geçmişinde kalemle yeniden adlandırma; yerel model ilk yanıttan sonra sohbete konusuna göre kısa bir ad verir
+  (elle verilen ad korunur).
+- **Ana direktifler (yönetici):** her sohbette kullanıcı tercihlerinden önce modele verilen temel kurallar (doğruluk, güvenlik, hitap,
+  dil); kullanıcılar görmez ve değiştiremez, yönetici Ayarlar'dan düzenler.
+- **Uygulama güncellemesi (Ayarlar):** GitHub'daki son sürümü kurulu sürümle karşılaştırır; yönetici tek tıkla günceller.
+  Kurulum dosyası SHA256SUMS ile, sürüm paketi de kurulum dosyası tarafından doğrulanır; uygulama kapanır, soru sormadan bu klasörü
+  günceller ve yeniden açılır. Modeller, sohbetler, kullanıcılar ve ayarlar korunur. (Bu düğme 1.0.2'den sonraki sürümlerde kullanılır.)
+- **Model Yöneticisi › "Güncellemeleri denetle":** model ve Python paketi güncellemelerini istendiği an gösterir; kapatılan bildirimler geri açılabilir.
+- **Python paketi güncellemesi düzeltmeleri:** doğrulama artık yalnızca bilgisayarda kurulu özelliklerin modülleriyle yapılır (kurulu olmayan
+  bir özelliğin modülü yüzünden güncelleme geri alınıyordu); bir özellik kurulumu sürerken güncelleme reddedilmez, bitmesini bekler;
+  sonuçlar ve hatalar uygulama günlüğüne yazılır. İlk kurulum sihirbazı indirirken güncelleme penceresi açılmaz; yönetici olmayan
+  kullanıcıya kendiliğinden gösterilmez.
+- **Açılış:** sunucu hazır olmadan açılan sayfa artık giriş ekranını atlamaz ("açılıyor…" ekranı, sonra giriş); oturum düşerse sayfa
+  giriş ekranına döner. Çıkış düğmesi model yüklenince yer değiştirmiyor.
+- **Kurulum.bat:** Windows satır sonları (CRLF); bazı bilgisayarlarda pencere açılıp hemen kapanıyordu.
+- **Güvenlik:** kullanıcı varken görsel motoruna giden doğrudan vekil uçlar (`/v1`, `/sdapi`) da oturum ister; uygulama güncellemesi
+  yalnızca github.com'dan indirir, sürüm sayfası bağlantısı yalnızca GitHub'a gider, GitHub'a sorgu dakikada en çok bir kez yapılır.
+
 ## 1.0.1 — güvenlik
 
 İlk sürümü inceleyen geliştiricilerin bildirdiği açıklar kapatıldı:

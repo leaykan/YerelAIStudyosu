@@ -1905,18 +1905,6 @@ function TextChat({
                 <span>Modeli kapat</span>
               </button>
             )}
-            {oturum?.girisli && (
-              <button
-                className="m3-btn m3-btn-outlined"
-                onClick={oturumuKapat}
-                disabled={cikisYapiliyor}
-                title={`${oturum.kullanici?.ad || ""} hesabından çık: sohbet kaydedilir, model bellekten çıkarılır`}
-                style={{ height: "38px", padding: "0 12px", fontSize: "0.82rem", display: "flex", alignItems: "center", gap: "6px", borderRadius: "var(--md-shape-corner-medium)" }}
-              >
-                {cikisYapiliyor ? <LoaderCircle className="progress-spinner" size={14} /> : <LogOut size={14} />}
-                <span>Çıkış</span>
-              </button>
-            )}
             {selectedModel && (!status.ready || status.settings?.model !== selectedModel) && !loadingModel && (
               <button
                 className="m3-btn m3-btn-filled"
@@ -1932,6 +1920,19 @@ function TextChat({
                 }}
               >
                 Modeli Yükle
+              </button>
+            )}
+            {/* Çıkış her zaman en sağda: model yüklenince/kapanınca düğmeler yer değiştirmesin */}
+            {oturum?.girisli && (
+              <button
+                className="m3-btn m3-btn-outlined"
+                onClick={oturumuKapat}
+                disabled={cikisYapiliyor}
+                title={`${oturum.kullanici?.ad || ""} hesabından çık: sohbet kaydedilir, model bellekten çıkarılır`}
+                style={{ height: "38px", padding: "0 12px", fontSize: "0.82rem", display: "flex", alignItems: "center", gap: "6px", borderRadius: "var(--md-shape-corner-medium)" }}
+              >
+                {cikisYapiliyor ? <LoaderCircle className="progress-spinner" size={14} /> : <LogOut size={14} />}
+                <span>Çıkış</span>
               </button>
             )}
           </div>

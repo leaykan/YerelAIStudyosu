@@ -9,6 +9,7 @@
 // "Yine de göster" düğmesinin arkasında durur. Müzik/efekt/video varsayılanları "isteğe bağlı" notuyla gelir. Toplam indirme, ortak Python/PyTorch
 // bileşeni bir kez sayılarak hesaplanır. Kurulum sunucuda uygulamanın mevcut indiricileriyle yapılır.
 // Sunucu tarafı: scripts/setup/ilk-kurulum-sunucu.cjs (/api/ilk-kurulum/*). Sunucu yamalanmamışsa sihirbaz sessizce görünmez.
+import { SorumlulukNotu } from "./AgKalkani";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Sparkles, Cpu, Download, Check, X, ChevronRight, ChevronLeft, AlertTriangle, Music, Video,
@@ -410,6 +411,7 @@ export default function IlkKurulumSihirbazi({ showConfirm, setActiveTab, textSet
                   kullanmaya devam edebilirsiniz; sihirbazı kapatsanız da indirme sürer.
                 </span>
               </div>
+              <SorumlulukNotu style={{ marginTop: 10 }} />
             </>
           )}
 

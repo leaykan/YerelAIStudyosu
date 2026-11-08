@@ -110,6 +110,9 @@ function pythonAgirliklariniOku(metin) {
 module.exports = function modelGuncelleme(ctx) {
   const A = ctx.arama; // model-arama.cjs dönüşündeki "ortak"
   const { OZ, ROOT, json, readJsonBody, pathInside, log, simdi } = A;
+  // Güncelleme sonuçları uygulama günlüğüne de yazılır (hata ayrıntısı sonradan bulunabilsin)
+  const mesgulMu = () => { try { return typeof ctx.mesgulMu === "function" && !!ctx.mesgulMu(); } catch (_) { return false; } };
+  const gunluk = (s) => { try { if (typeof ctx.motorGunlugu === "function") ctx.motorGunlugu(`[güncelleme] ${s}`); } catch (_) {} };
   const klasorler = ctx.klasorler || {};
   const ISCI_KLASORU = ctx.isciKlasoru || path.join(ROOT, "scripts", "workers");
   const TTS_DOSYALARI = ctx.ttsAgirlikDosyalari || ["tts_antalia_supertonic.py", "tts_ahenk_omnivoice.py"];
@@ -405,9 +408,10 @@ module.exports = function modelGuncelleme(ctx) {
     }
   }
 
-  function varsayilanPythonCalistir(argumanlar, { zamanAsimiMs = 30 * 60 * 1000 } = {}) {
+  function varsayilanPythonCalistir(argumanlar, { zamanAsimiMs = 30 * 60 * 1000, kurulum = false } = {}) {
     return new Promise((resolve) => {
-      const py = OZ && OZ.PYTHON;
+      // Ağ kalkanı: internete çıkan pip yalnızca kurulum kopyasıyla çalışır
+      const py = kurulum && OZ && typeof OZ.kurulumPython === "function" ? OZ.kurulumPython() : OZ && OZ.PYTHON;
       if (!py || (process.platform === "win32" && !fs.existsSync(py))) { resolve({ kod: -1, cikti: "Taşınabilir Python kurulu değil." }); return; }
       let cikti = "";
       let p;
@@ -431,7 +435,7 @@ module.exports = function modelGuncelleme(ctx) {
     fs.writeFileSync(dosya, `${ad}==${surum} ${tekerler.map((w) => `--hash=sha256:${w.sha256}`).join(" ")}\n`, "utf8");
     try {
       return await pythonCalistir(["-m", "pip", "install", "--isolated", "--no-warn-script-location", "--disable-pip-version-check",
-        "--cache-dir", PIP_ONBELLEK, "--index-url", "https://pypi.org/simple", "--no-deps", "--only-binary=:all:", "--require-hashes", "-r", dosya]);
+        "--cache-dir", PIP_ONBELLEK, "--index-url", "https://pypi.org/simple", "--no-deps", "--only-binary=:all:", "--require-hashes", "-r", dosya], { kurulum: true });
     } finally { try { fs.unlinkSync(dosya); } catch (_) {} }
   }
   async function pipSurumu(ad) {
@@ -457,9 +461,21 @@ module.exports = function modelGuncelleme(ctx) {
   }
 
   async function pipGuncelle(g) {
-    const sabit = pipSabitlemeleri(OZ && OZ.OZELLIKLER).get(String(g.paketAdi || ""));
-    if (!sabit) throw new Error("Bu paket artık hiçbir özellikte sabitlenmemiş.");
-    if (OZ.kurulumDurumu && OZ.kurulumDurumu().aktif) throw new Error("Bir özellik kurulumu sürüyor; bittikten sonra tekrar deneyin.");
+    // Bir özellik kurulumu sürüyorsa reddetmek yerine bitmesi beklenir (ilk kurulum sihirbazı indirirken olur)
+    if (OZ.kurulumDurumu && OZ.kurulumDurumu().aktif) {
+      const bekleyenIs = A.aktifIs();
+      if (bekleyenIs) bekleyenIs.asama = "Bir özellik kurulumu sürüyor; bitmesi bekleniyor";
+      gunluk(`${g.ad}: özellik kurulumu bitene kadar bekleniyor`);
+      while (OZ.kurulumDurumu().aktif) await new Promise((r) => setTimeout(r, 5000));
+    }
+    // Doğrulama yalnızca bu bilgisayarda KURULU özelliklerin modülleriyle yapılır (kurulu olmayan bir özelliğin
+    // modülü — ör. Antalia kurulmamışken antalia_mini — içe aktarılamaz ve güncellemeyi boşuna geri aldırırdı)
+    const kurulu = new Set();
+    for (const id of Object.keys((OZ && OZ.OZELLIKLER) || {})) {
+      try { if (typeof OZ.ozellikKuruluMu === "function" ? await OZ.ozellikKuruluMu(id) : OZ.kuruluBiliniyorMu(id)) kurulu.add(id); } catch (_) {}
+    }
+    const sabit = pipSabitlemeleri(OZ && OZ.OZELLIKLER, (id) => kurulu.has(id)).get(String(g.paketAdi || ""));
+    if (!sabit) throw new Error("Bu paketi kullanan kurulu bir özellik yok; güncellemeye gerek yok.");
     const r = await pipDenetle(sabit, tercihOku()); // taze yeniden denetim
     if (!r) return { id: g.id, guncel: true };
     if (r.elleInceleme) throw new Error(`${r.ad}: elle inceleme gerekiyor. ${r.neden}`);
@@ -559,7 +575,7 @@ module.exports = function modelGuncelleme(ctx) {
     const t = tercihOku();
     const m = A.manifestOku();
     const sorulmayan = Object.keys(t.sorma).filter((k) => t.sorma[k]).length;
-    if (!o || !Array.isArray(o.guncellemeler)) return { ok: true, denetleniyor: denetim.suruyor, guncellemeler: [], sonDenetim: 0, sorulmayan };
+    if (!o || !Array.isArray(o.guncellemeler)) return { ok: true, denetleniyor: denetim.suruyor, guncellemeler: [], sonDenetim: 0, sorulmayan, mesgul: mesgulMu() };
     const guncellemeler = o.guncellemeler.filter((g) => {
       if (t.sorma[g.id]) return false; // "bir daha sorma"
       if (t.atlanan[g.id] && t.atlanan[g.id] === g.yeniSurum) return false;
@@ -569,7 +585,7 @@ module.exports = function modelGuncelleme(ctx) {
       if (g.cesit === "paket" && OZ && OZ.PAKETLER && OZ.PAKETLER[g.paket] && OZ.PAKETLER[g.paket].surum === g.yeniSurum) return false;
       return true;
     });
-    return { ok: true, denetleniyor: denetim.suruyor, sonDenetim: o.sonDenetim, guncellemeler, sorulmayan };
+    return { ok: true, denetleniyor: denetim.suruyor, sonDenetim: o.sonDenetim, guncellemeler, sorulmayan, mesgul: mesgulMu() };
   }
 
   // --------------------------------------------------------------------------
@@ -711,8 +727,10 @@ module.exports = function modelGuncelleme(ctx) {
           try {
             const r = g.cesit === "paket" ? await paketGuncelle(g) : g.cesit === "pip" ? await pipGuncelle(g) : await modelGuncelle(g);
             sonuclar.push({ ...r, ad: g.ad, ok: true });
+            gunluk(`${g.ad}: güncellendi${r && r.surum ? ` (${r.surum})` : ""}`);
           } catch (err) {
             sonuclar.push({ id: g.id, ad: g.ad, ok: false, hata: err.message || String(err) });
+            gunluk(`${g.ad}: BAŞARISIZ — ${String(err.message || err).replace(/\s+/g, " ").slice(0, 600)}`);
           }
         }
         const basarisiz = sonuclar.filter((s) => !s.ok);

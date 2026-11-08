@@ -1,4 +1,5 @@
 import React, { memo, useState, useEffect, useCallback } from "react";
+import { SorumlulukNotu } from "./AgKalkani";
 import { FolderOpen, DownloadCloud, RefreshCw, Database, Trash2, Square, HardDrive, Library, AlertTriangle, Search, X, EyeOff } from "lucide-react";
 import { 
   listLocalModels, 
@@ -1744,10 +1745,17 @@ Bunun yerine Simülasyon Modunda devam edilsin mi?`, confirmLabel: "Devam Et" })
   return (
     <div className="workspace-area">
       <div className="workspace-title-section">
-        <h2 className="workspace-title">Model Yöneticisi</h2>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: "12px", flexWrap: "wrap" }}>
+          <h2 className="workspace-title">Model Yöneticisi</h2>
+          <button type="button" className="m3-btn m3-btn-tonal" onClick={() => window.dispatchEvent(new CustomEvent("yas-guncellemeleri-ac"))}
+            title="Kurulu modeller ve Python paketleri için yeni sürüm ara">
+            <RefreshCw size={15} /> Güncellemeleri denetle
+          </button>
+        </div>
         <p className="workspace-subtitle">
           Yerel dosyaları yönetin ve önerilen ağırlıkları doğrudan yerel modeller klasörünüze indirin.
         </p>
+        <SorumlulukNotu style={{ marginTop: 8 }} />
       </div>
 
       {/* Tab Selector for Image vs Text */}

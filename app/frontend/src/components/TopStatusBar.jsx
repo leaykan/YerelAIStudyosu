@@ -25,7 +25,8 @@ function TopStatusBar({
   theme, 
   setTheme,
   sidebarVisible,
-  onToggleSidebar
+  onToggleSidebar,
+  sagEk = null,
 }) {
   const [showThemeMenu, setShowThemeMenu] = useState(false);
   const menuRef = useRef(null);
@@ -94,54 +95,6 @@ function TopStatusBar({
       </div>
 
       <div className="telemetry-group" style={{ position: "relative" }}>
-        <button
-          className="theme-toggle-btn"
-          onClick={() => setTheme(isDark ? "light" : "dark")}
-          title={`${isDark ? "acik" : "koyu"} temaya geç`}
-        >
-          {isDark ? <Sun size={18} /> : <Moon size={18} />}
-        </button>
-
-        <div ref={menuRef} style={{ position: "relative", display: "inline-block" }}>
-          <button
-            className={`theme-toggle-btn ${showThemeMenu ? "active" : ""}`}
-            onClick={() => setShowThemeMenu(!showThemeMenu)}
-            title="Özel bir renk teması seçin"
-            style={{ marginRight: "12px" }}
-          >
-            <Palette size={18} />
-          </button>
-          
-          {showThemeMenu && (
-            <div className="theme-dropdown-menu">
-              <div className="theme-dropdown-header">Tema Seç</div>
-              <div className="theme-dropdown-divider"></div>
-              {THEMES.map((t) => {
-                const isActive = theme === t.id;
-                return (
-                  <button
-                    key={t.id}
-                    className={`theme-dropdown-item ${isActive ? "active" : ""}`}
-                    onClick={() => {
-                      setTheme(t.id);
-                      setShowThemeMenu(false);
-                    }}
-                  >
-                    <div style={{ display: "flex", alignItems: "center", gap: "8px", width: "100%" }}>
-                      <div style={{ display: "flex", gap: "2px" }}>
-                        <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: t.primary }} />
-                        <div style={{ width: "8px", height: "8px", borderRadius: "50%", background: t.secondary }} />
-                      </div>
-                      <span className="theme-name-text">{t.name}</span>
-                      {isActive && <Check size={12} style={{ marginLeft: "auto", color: "var(--md-sys-color-primary)" }} />}
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-          )}
-        </div>
-
         {serverRunning && (
           <button
             className="m3-btn m3-btn-error"
@@ -154,6 +107,9 @@ function TopStatusBar({
             <span>{isStoppingServer ? "Durduruluyor" : "Sunucuyu Durdur"}</span>
           </button>
         )}
+
+        {/* Ağ kalkanı göstergesi (CPU'nun yanında). Tema seçimi Ayarlar'da. */}
+        {sagEk}
 
         {/* CPU Telemetry Chip */}
         <div className="telemetry-chip" title="CPU kullanımı">

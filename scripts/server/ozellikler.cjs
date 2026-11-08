@@ -19,6 +19,18 @@ module.exports = function ozellikAltyapisi({ ROOT, pathInside, log = console.log
   const PY_DIR = path.join(APP, "tools", "python-win");
   const PYTHON = osPlatform === "win32" ? path.join(PY_DIR, "python.exe") : (process.env.PYTHON_BIN || "python3");
   const PIP_CACHE = path.join(APP, "cache", "pip");
+  // Ağ kalkanı: modelleri çalıştıran python.exe'nin internete çıkışı Windows Güvenlik Duvarı'nda kapalıdır. Paket kurulumu
+  // (pip) yalnızca bu ayrı kopyayla yapılır; ağ gözcüsü bu kopyaya da yalnızca bir kurulum sürerken izin verir.
+  const KURULUM_PYTHON = osPlatform === "win32" ? path.join(PY_DIR, "python-kurulum.exe") : PYTHON;
+  function kurulumPython() {
+    if (osPlatform !== "win32") return PYTHON;
+    try {
+      const a = fs.statSync(PYTHON);
+      let b = null; try { b = fs.statSync(KURULUM_PYTHON); } catch (_) {}
+      if (!b || b.size !== a.size) fs.copyFileSync(PYTHON, KURULUM_PYTHON);
+    } catch (_) {}
+    return fs.existsSync(KURULUM_PYTHON) ? KURULUM_PYTHON : PYTHON;
+  }
   // python.org'un 3.12.10 gömülü sürüm sayfasında yayımladığı MD5 özeti (indirme bütünlüğü; python.org bu sürüm için SHA256 yayımlamıyor)
   const PYTHON_EMBED_MD5 = "FE8EF205F2E9C3BA44D0CF9954E1ABD3";
   const HF_CACHE = path.join(APP, "cache", "hf");
@@ -218,7 +230,7 @@ module.exports = function ozellikAltyapisi({ ROOT, pathInside, log = console.log
           kurulum.asama = `${oz.etiket}: paketler kuruluyor (${i + 1}/${oz.adimlar.length})`;
           const argumanlar = oz.adimlar[i].map((a) => (a.startsWith("@gereksinimler/") ? path.join(CALISAN_KLASORU, "gereksinimler", a.slice(15)) : a));
           log(`  [ozellik] ${id}: pip install ${argumanlar.join(" ")}`);
-          const r = await calistir(PYTHON, ["-m", "pip", "install", "--no-warn-script-location", ...argumanlar], { env: pipEnv(), satir, zamanAsimiMs: 60 * 60 * 1000 });
+          const r = await calistir(kurulumPython(), ["-m", "pip", "install", "--no-warn-script-location", ...argumanlar], { env: pipEnv(), satir, zamanAsimiMs: 60 * 60 * 1000 });
           if (r.kod !== 0) throw new Error("pip hatası: " + r.cikti.trim().split(/\r?\n/).slice(-4).join(" | ").slice(0, 600));
         }
         if (oz.agirlik) {
@@ -231,7 +243,7 @@ module.exports = function ozellikAltyapisi({ ROOT, pathInside, log = console.log
             `b = t.AGIRLIKLAR[${JSON.stringify(oz.agirlik.anahtar)}]`,
             "print(snapshot_download(b['repo'], revision=b['revision'], allow_patterns=b['allow_patterns']))",
           ].join("; ");
-          const r = await calistir(PYTHON, ["-c", py], { env: { ...pipEnv(), HF_HOME: HF_CACHE, HF_HUB_DISABLE_TELEMETRY: "1" }, cwd: CALISAN_KLASORU, satir, zamanAsimiMs: 3 * 60 * 60 * 1000 });
+          const r = await calistir(kurulumPython(), ["-c", py], { env: { ...pipEnv(), HF_HOME: HF_CACHE, HF_HUB_DISABLE_TELEMETRY: "1" }, cwd: CALISAN_KLASORU, satir, zamanAsimiMs: 3 * 60 * 60 * 1000 }); // ağ: kurulum kopyası
           if (r.kod !== 0) throw new Error("Model dosyaları indirilemedi: " + r.cikti.trim().split(/\r?\n/).slice(-3).join(" | ").slice(0, 600));
         }
         kurulum.asama = "Doğrulanıyor";
@@ -483,7 +495,7 @@ module.exports = function ozellikAltyapisi({ ROOT, pathInside, log = console.log
   }
 
   return {
-    OZELLIKLER, PAKETLER, KLASORLER, PYTHON,
+    OZELLIKLER, PAKETLER, KLASORLER, PYTHON, kurulumPython,
     ozellikKuruluMu, kuruluBiliniyorMu, ozellikKur, kurulumDurumu: () => ({ ...kurulum, sira: [...kurulumSirasi] }),
     paketKuruluMu, paketIndir, paketDurumu: () => ({ ...paketDurumu }),
     calisanIstek, calisanDurdur, calisanDurumu, calisanCanliTut, hepsiniKapat, hfAnahtari,

@@ -177,7 +177,11 @@ Temel özellikler (sohbet, görsel, Whisper, Kokoro) çalışır. EMA ve diğer 
 
 ### Kaldırma
 
-Uygulama klasörünü ve masaüstü kısayolunu silin. Başka bir yere bir şey yazılmaz.
+Ağ kalkanını kurduysanız önce onu kaldırın: uygulama klasöründe yönetici olarak açılan PowerShell'de
+`powershell -ExecutionPolicy Bypass -File scripts\setup\ag-kalkani.ps1 -Islem Kaldir -Kok "<uygulama klasörü>"`
+(güvenlik duvarı kurallarını ve otomatik güncelleme görevini siler). Sonra uygulama klasörünü ve masaüstü kısayolunu silin.
+Kalkan dışında başka bir yere bir şey yazılmaz (kalkan: Windows Güvenlik Duvarı kuralları, bir zamanlanmış görev ve
+`%ProgramData%\YerelAIStudyosu\ag-kalkani.ps1`).
 
 ---
 
@@ -238,6 +242,20 @@ Sihirbaz atlanabilir; her şey sonradan Model Yöneticisi'nden indirilebilir.
 ---
 
 ## <a id="guvenlik"></a>Güvenlik notları
+
+> **Sorumluluk:** Bu uygulama ek yetenekler için açık kaynaklı, üçüncü taraflarca geliştirilmiş yapay zekâ modelleri ve yazılım
+> paketleri kullanır. Bunlar uygulamanın geliştiricileri tarafından denetlenemez. Olası riskler nedeniyle model ve paket yükleme
+> ile model seçimlerinde sorumluluk kullanıcıya aittir. Aşağıdaki korumalar riski azaltır ama tamamen ortadan kaldırmaz.
+
+- **Ağ kalkanı (Windows):** modelleri çalıştıran bütün motorların (Python, llama.cpp, stable-diffusion.cpp, whisper.cpp, Piper…)
+  internete çıkışı Windows Güvenlik Duvarı kurallarıyla kapatılır. Kurulumda bir kez yönetici izni istenir; ardından bir sistem
+  görevi 10 dakikada bir ve her açılışta yeni inen motorları da kendiliğinden korur (kimsenin bir şey yapması gerekmez). Görevin
+  çalıştırdığı betik yalnızca yöneticilerin değiştirebildiği `%ProgramData%\YerelAIStudyosu` klasöründedir. Kalkan arayüzden
+  kapatılamaz. İnternete yalnızca uygulamanın sunucusu (web araması — sohbetteki "Web" düğmesiyle —, model indirme, güncelleme)
+  ve yalnızca paket kurulumunda kullanılan ayrı Python kopyası çıkar.
+- **Ağ gözcüsü:** 20 saniyede bir, uygulamanın başlattığı bütün süreçlerin ve alt süreçlerinin bağlantılarına bakar. Sunucu
+  dışında internete bağlanan süreci (kalkanı başka bir programla aşma denemesi dahil) durdurur, günlüğe yazar ve arayüzde kırmızı
+  uyarı gösterir. Kurulum/indirme sürerken yalnızca kurulum araçlarına izin verir.
 
 - Sunucu yalnızca **yerel** isteklere yanıt verir; başka sitelerden gelen istekler ve çerçeve içine gömme reddedilir.
   Uygulamayı ağa / internete açmayın (uzaktan erişim için parola, HTTPS ve VPN gerekir; bu sürümde yoktur).

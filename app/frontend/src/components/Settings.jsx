@@ -21,6 +21,9 @@ import {
 } from "../services/api";
 import { THEMES } from "../themes";
 import KullaniciHafiza from "./KullaniciHafiza";
+import UygulamaGuncelleme from "./UygulamaGuncelleme";
+import { AgKalkaniKarti } from "./AgKalkani";
+import AnaDirektifler from "./AnaDirektifler";
 
 // --- Collapsible Card Component ---
 function CollapsibleCard({ icon: Icon, title, subtitle, children, defaultExpanded = false, id, badge, badgeColor }) {
@@ -1165,6 +1168,15 @@ function Settings({
 
       {/* Kullanıcı girişi ve kişisel hafıza */}
       <KullaniciHafiza showAlert={showAlert} showConfirm={showConfirm} />
+
+      {/* Ana direktifler (yalnızca yöneticiye görünür) */}
+      <AnaDirektifler showAlert={showAlert} showConfirm={showConfirm} />
+
+      {/* Ağ kalkanı ve ağ gözcüsü */}
+      <AgKalkaniKarti showAlert={showAlert} />
+
+      {/* Uygulama güncellemesi (GitHub) */}
+      <UygulamaGuncelleme showAlert={showAlert} showConfirm={showConfirm} />
 
       {/* İlk kurulum sihirbazı */}
       <div className="m3-card ayar-tasindi-karti">

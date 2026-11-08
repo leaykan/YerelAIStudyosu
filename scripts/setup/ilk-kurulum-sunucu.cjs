@@ -65,6 +65,13 @@ module.exports = function ilkKurulumAltyapisi(ctx) {
   const PY_DIR = path.join(APP, "tools", "python-win");
   const PYTHON = path.join(PY_DIR, "python.exe");
   const PIP_CACHE = path.join(APP, "cache", "pip");
+  // Ağ kalkanı: internete yalnızca bu kurulum kopyası çıkabilir (ozellikler.cjs ile aynı)
+  const KURULUM_PYTHON = path.join(PY_DIR, "python-kurulum.exe");
+  function kurulumPython() {
+    if (process.platform !== "win32") return PYTHON;
+    try { const a = fs.statSync(PYTHON); let b = null; try { b = fs.statSync(KURULUM_PYTHON); } catch (_) {} if (!b || b.size !== a.size) fs.copyFileSync(PYTHON, KURULUM_PYTHON); } catch (_) {}
+    return fs.existsSync(KURULUM_PYTHON) ? KURULUM_PYTHON : PYTHON;
+  }
   // python.org'un 3.12.10 gömülü sürümü için yayımladığı MD5 (ozellikler.cjs ile aynı değer)
   const PYTHON_EMBED_MD5 = "FE8EF205F2E9C3BA44D0CF9954E1ABD3";
   const EMA_KLASOR = path.join(APP, "tts-models", "ema");
@@ -773,14 +780,15 @@ module.exports = function ilkKurulumAltyapisi(ctx) {
     for (let i = 0; i < adimlar.length; i += 1) {
       iptalMi();
       kuyruk.asama = `EMA: paketler kuruluyor (${i + 1}/${adimlar.length})${i === 0 ? " — PyTorch, birkaç dakika sürebilir" : ""}`;
-      const r = await calistir(PYTHON, ["-m", "pip", "install", "--no-warn-script-location", ...adimlar[i]], { env: pipEnv(), zamanAsimiMs: 60 * 60 * 1000 });
+      const r = await calistir(kurulumPython(), ["-m", "pip", "install", "--no-warn-script-location", ...adimlar[i]], { env: pipEnv(), zamanAsimiMs: 60 * 60 * 1000 });
       if (r.kod !== 0) throw new Error("pip hatası: " + sonSatirlar(r.cikti, 4));
     }
     kuyruk.asama = "EMA: ses modeli indiriliyor (~34 MB) ve deneniyor";
     fs.mkdirSync(EMA_KLASOR, { recursive: true });
     const deneme = path.join(EMA_KLASOR, "deneme.wav");
     const py = "import os; from ema_lightning import EMA; s=EMA().say('Kurulum tamamlandı. Merhaba, ben Vega.', path=os.environ['YAS_WAV'], sample_rate=24000); print(round(s.duration, 1))";
-    const r = await calistir(PYTHON, ["-c", py], {
+    // EMA modeli ilk çalıştırmada iner: bu yüzden ağa çıkabilen kurulum kopyasıyla çalıştırılır (sonraki kullanım çevrimdışı)
+    const r = await calistir(kurulumPython(), ["-c", py], {
       env: pipEnv({ HF_HOME: path.join(EMA_KLASOR, "hf"), HF_HUB_DISABLE_TELEMETRY: "1", YAS_WAV: deneme }),
       zamanAsimiMs: 30 * 60 * 1000,
     });
@@ -905,5 +913,5 @@ module.exports = function ilkKurulumAltyapisi(ctx) {
     return false;
   }
 
-  return { handle, KATALOG, KATEGORILER, donanim, tumlesikMi, oneriler, kullanilamazSebep };
+  return { handle, KATALOG, KATEGORILER, donanim, tumlesikMi, oneriler, kullanilamazSebep, kuyrukAktif: () => Boolean(kuyruk.aktif) };
 };

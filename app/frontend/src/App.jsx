@@ -11,6 +11,7 @@ import MuzikStudyosu from "./components/MuzikStudyosu";
 import VideoStudyosu from "./components/VideoStudyosu";
 import IlkKurulumSihirbazi, { onerilenSistemMesaji } from "./components/IlkKurulumSihirbazi";
 import GuncellemeBildirimi from "./components/GuncellemeBildirimi";
+import { AgKalkaniUyari, AgKalkaniDurum } from "./components/AgKalkani";
 import { profilOlustur } from "./modelProfilleri";
 import { getModelDetails, cleanupCandidates, formatBytes, getCleanupCandidates, getDiagnostics, getHardwareSpecs, getHealth, getTelemetry, getBackendOptions, getBackendStatus, listGeneratedOutputs, listLlmConversations, saveLlmConversation, deleteLlmConversation, listSpeechTranscriptions, deleteSpeechTranscription, listTtsOutputs, deleteTtsOutput, stopServer } from "./services/api";
 import "./App.css";
@@ -19,8 +20,17 @@ import { kullaniciDurumu, cikisYap } from "./services/kullaniciApi";
 
 function App() {
   // Kullanıcı girişi: kullanıcı oluşturulmuşsa ve oturum yoksa giriş ekranı gösterilir
-  const [girisDurumu, setGirisDurumu] = useState(null);
-  useEffect(() => { kullaniciDurumu().then(setGirisDurumu).catch(() => setGirisDurumu(null)); }, []);
+  // undefined: henüz öğrenilmedi (sunucu açılıyor olabilir). Durum alınamazsa uygulama AÇILMAZ, birkaç saniyede bir yeniden denenir.
+  const [girisDurumu, setGirisDurumu] = useState(undefined);
+  useEffect(() => {
+    let bitti = false;
+    const dene = async () => {
+      try { const d = await kullaniciDurumu(); if (!bitti) { window.__yasGirisli = !!d.girisli; window.__yasYonetici = !d.kurulum || !!(d.kullanici && d.kullanici.yonetici); setGirisDurumu(d); } }
+      catch (_) { if (!bitti) setTimeout(dene, 1500); }
+    };
+    dene();
+    return () => { bitti = true; };
+  }, []);
   // Otomatik kilit: 15 dakika fare/klavye hareketi yoksa oturum kapanır, giriş ekranı gelir (süren üretimler etkilenmez)
   useEffect(() => {
     if (!girisDurumu?.girisli) return undefined;
@@ -382,6 +392,24 @@ function App() {
     };
   }, []);
 
+  // Yerel model sohbete konu başlığı verince (kayıttan birkaç saniye sonra) listedeki adlar tazelenir
+  const baslikTazeleRef = useRef(null);
+  const basliklariTazele = useCallback(() => {
+    clearTimeout(baslikTazeleRef.current);
+    const dene = async (n) => {
+      try {
+        const liste = await listLlmConversations();
+        const harita = new Map(liste.map((c) => [c.id, c]));
+        setConversations((prev) => prev.map((c) => {
+          const d = harita.get(c.id);
+          return d && d.baslikKaynagi && (d.title !== c.title || d.baslikKaynagi !== c.baslikKaynagi) ? { ...c, title: d.title, baslikKaynagi: d.baslikKaynagi } : c;
+        }));
+      } catch (_) {}
+      if (n < 3) baslikTazeleRef.current = setTimeout(() => dene(n + 1), 20000);
+    };
+    baslikTazeleRef.current = setTimeout(() => dene(0), 15000);
+  }, []);
+
   const saveConversationState = useCallback((id, msgs, modelName, newTitle = null) => {
     setConversations((prev) => {
       const list = [...prev];
@@ -407,9 +435,24 @@ function App() {
         list.unshift(conversation);
       }
       persistConversation(conversation);
+      if (!conversation.baslikKaynagi && (msgs || []).some((m) => m && m.role === "assistant")) setTimeout(() => basliklariTazele(), 0);
       return list;
     });
-  }, []);
+  }, [basliklariTazele]);
+
+  // Sohbeti elle yeniden adlandır (sunucu: baslikKaynagi "elle"; sonraki kayıtlar başlığı ezmez)
+  const handleRenameConversation = useCallback(async (id, title) => {
+    const baslik = String(title || "").trim();
+    if (!baslik) return;
+    try {
+      const res = await fetch("/api/llm/rename-conversation", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ id, title: baslik }) });
+      const v = await res.json().catch(() => ({}));
+      if (!res.ok || v.ok === false) throw new Error(v.error || `HTTP ${res.status}`);
+      setConversations((prev) => prev.map((c) => (c.id === id ? { ...c, title: v.title, baslikKaynagi: "elle" } : c)));
+    } catch (err) {
+      showAlert({ title: "Sohbet adlandırılamadı", message: err.message || String(err), danger: true });
+    }
+  }, [showAlert]);
 
   const handleDeleteConversation = useCallback((id, e) => {
     if (e) e.stopPropagation();
@@ -745,6 +788,7 @@ Modeller ve üretilen çıktılar buna dahil değildir.`,
       showHistory={showHistory}
       setShowHistory={setShowHistory}
       onDeleteConversation={handleDeleteConversation}
+      onRenameConversation={handleRenameConversation}
       speechTranscriptions={speechTranscriptions}
       selectedSpeechTranscript={selectedSpeechTranscript}
       setSelectedSpeechTranscript={setSelectedSpeechTranscript}
@@ -792,6 +836,13 @@ Modeller ve üretilen çıktılar buna dahil değildir.`,
   }, [girisDurumu?.girisli, showConfirm]);
 
   // Kullanıcı zorunlu: hiç kullanıcı yoksa önce yönetici hesabı oluşturulur; varsa giriş istenir
+  if (girisDurumu === undefined) {
+    return (
+      <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: "var(--md-sys-color-background)", color: "var(--md-sys-color-on-background)", fontSize: "0.95rem", opacity: 0.85 }}>
+        Yerel AI Stüdyosu açılıyor…
+      </div>
+    );
+  }
   if (girisDurumu && (!girisDurumu.kurulum || !girisDurumu.girisli)) {
     return <GirisEkrani ilk={!girisDurumu.kurulum} kullanicilar={girisDurumu.kullanicilar || []} onGiris={() => window.location.reload()} />;
   }
@@ -815,7 +866,10 @@ Modeller ve üretilen çıktılar buna dahil değildir.`,
           setTheme={setTheme}
           sidebarVisible={sidebarVisible}
           onToggleSidebar={() => setSidebarVisible(!sidebarVisible)}
+          sagEk={<AgKalkaniDurum onAc={() => setActiveTab("settings")} showConfirm={showConfirm} showAlert={showAlert} />}
         />
+        {/* Kırmızı bayrak: internete çıkmaya çalışıp durdurulan motorlar; kalkan kurulu değilse uyarı */}
+        <AgKalkaniUyari showAlert={showAlert} />
 
         {/* Dynamic Workspace Container */}
         <div style={{ display: activeTab === "generator" ? "flex" : "none", flex: 1, flexDirection: "column", overflow: "hidden" }}>
